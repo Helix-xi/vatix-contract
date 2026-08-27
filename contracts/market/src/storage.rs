@@ -135,32 +135,51 @@ pub enum StorageKey {
     TotalLockedCollateral(Address),
 }
 
-pub fn get_pending_threshold_signers(env: &Env) -> Option<crate::types::PendingThresholdSignersChange> {
-    env.storage().persistent().get(&StorageKey::PendingThresholdSigners)
+pub fn get_pending_threshold_signers(
+    env: &Env,
+) -> Option<crate::types::PendingThresholdSignersChange> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PendingThresholdSigners)
 }
 
-pub fn set_pending_threshold_signers(env: &Env, pending: &crate::types::PendingThresholdSignersChange) {
-    env.storage().persistent().set(&StorageKey::PendingThresholdSigners, pending);
+pub fn set_pending_threshold_signers(
+    env: &Env,
+    pending: &crate::types::PendingThresholdSignersChange,
+) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingThresholdSigners, pending);
 }
 
 pub fn clear_pending_threshold_signers(env: &Env) {
-    env.storage().persistent().remove(&StorageKey::PendingThresholdSigners);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingThresholdSigners);
 }
 
 pub fn get_market_threshold_signers(env: &Env, market_id: u32) -> Option<Vec<BytesN<32>>> {
-    env.storage().persistent().get(&StorageKey::MarketThresholdSigners(market_id))
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MarketThresholdSigners(market_id))
 }
 
 pub fn set_market_threshold_signers(env: &Env, market_id: u32, signers: &Vec<BytesN<32>>) {
-    env.storage().persistent().set(&StorageKey::MarketThresholdSigners(market_id), signers);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MarketThresholdSigners(market_id), signers);
 }
 
 pub fn get_market_threshold_quorum(env: &Env, market_id: u32) -> Option<u32> {
-    env.storage().persistent().get(&StorageKey::MarketThresholdQuorum(market_id))
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MarketThresholdQuorum(market_id))
 }
 
 pub fn set_market_threshold_quorum(env: &Env, market_id: u32, quorum: u32) {
-    env.storage().persistent().set(&StorageKey::MarketThresholdQuorum(market_id), &quorum);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MarketThresholdQuorum(market_id), &quorum);
 }
 
 pub fn get_threshold_signers(env: &Env) -> Vec<BytesN<32>> {
@@ -204,7 +223,6 @@ pub fn is_oracle_v1_disabled(env: &Env) -> bool {
 
 // --- Version helpers ---
 
-
 pub fn set_version(env: &Env) {
     env.storage()
         .persistent()
@@ -212,10 +230,7 @@ pub fn set_version(env: &Env) {
 }
 
 pub fn assert_version(env: &Env) -> Result<(), ContractError> {
-    let on_chain: Option<u32> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::StorageVersion);
+    let on_chain: Option<u32> = env.storage().persistent().get(&StorageKey::StorageVersion);
     if on_chain != Some(STORAGE_VERSION) {
         return Err(ContractError::UpgradeRequired);
     }
@@ -226,7 +241,10 @@ pub fn assert_version(env: &Env) -> Result<(), ContractError> {
 
 pub fn get_market(env: &Env, market_id: u32) -> Result<Option<Market>, ContractError> {
     assert_version(env)?;
-    Ok(env.storage().persistent().get(&StorageKey::Market(market_id)))
+    Ok(env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Market(market_id)))
 }
 
 pub fn set_market(env: &Env, market_id: u32, market: &Market) -> Result<(), ContractError> {
@@ -240,7 +258,10 @@ pub fn set_market(env: &Env, market_id: u32, market: &Market) -> Result<(), Cont
 
 pub fn has_market(env: &Env, market_id: u32) -> Result<bool, ContractError> {
     assert_version(env)?;
-    Ok(env.storage().persistent().has(&StorageKey::Market(market_id)))
+    Ok(env
+        .storage()
+        .persistent()
+        .has(&StorageKey::Market(market_id)))
 }
 
 // --- Position Storage ---
@@ -251,7 +272,10 @@ pub fn get_position(
     user: &Address,
 ) -> Result<Option<Position>, ContractError> {
     assert_version(env)?;
-    Ok(env.storage().persistent().get(&StorageKey::Position(market_id, user.clone())))
+    Ok(env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Position(market_id, user.clone())))
 }
 
 pub fn set_position(
@@ -261,13 +285,18 @@ pub fn set_position(
     position: &Position,
 ) -> Result<(), ContractError> {
     assert_version(env)?;
-    env.storage().persistent().set(&StorageKey::Position(market_id, user.clone()), position);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Position(market_id, user.clone()), position);
     Ok(())
 }
 
 pub fn has_position(env: &Env, market_id: u32, user: &Address) -> Result<bool, ContractError> {
     assert_version(env)?;
-    Ok(env.storage().persistent().has(&StorageKey::Position(market_id, user.clone())))
+    Ok(env
+        .storage()
+        .persistent()
+        .has(&StorageKey::Position(market_id, user.clone())))
 }
 
 // --- Protocol-wide Collateral (ADR-002, Issue #685) ---
@@ -337,7 +366,11 @@ pub fn get_market_participant_count(env: &Env, market_id: u32) -> u32 {
 
 pub fn get_admin(env: &Env) -> Result<Address, ContractError> {
     assert_version(env)?;
-    Ok(env.storage().persistent().get(&StorageKey::Admin).expect("Admin not set"))
+    Ok(env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Admin)
+        .expect("Admin not set"))
 }
 
 pub fn set_admin(env: &Env, admin: &Address) {
@@ -353,7 +386,9 @@ pub fn get_pending_admin(env: &Env) -> Option<Address> {
 }
 
 pub fn set_pending_admin(env: &Env, admin: &Address) {
-    env.storage().persistent().set(&StorageKey::PendingAdmin, admin);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingAdmin, admin);
 }
 
 pub fn clear_pending_admin(env: &Env) {
@@ -364,12 +399,18 @@ pub fn clear_pending_admin(env: &Env) {
 
 pub fn get_next_market_id(env: &Env) -> Result<u32, ContractError> {
     assert_version(env)?;
-    Ok(env.storage().persistent().get(&StorageKey::MarketCounter).unwrap_or(0))
+    Ok(env
+        .storage()
+        .persistent()
+        .get(&StorageKey::MarketCounter)
+        .unwrap_or(0))
 }
 
 pub fn increment_market_id(env: &Env) -> Result<u32, ContractError> {
     let next_id = get_next_market_id(env)? + 1;
-    env.storage().persistent().set(&StorageKey::MarketCounter, &next_id);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MarketCounter, &next_id);
     Ok(next_id)
 }
 
@@ -381,7 +422,9 @@ pub fn get_treasury(env: &Env) -> Option<Address> {
 
 /// Register (or replace) the treasury contract address for protocol fee routing.
 pub fn set_treasury(env: &Env, treasury: &Address) {
-    env.storage().persistent().set(&StorageKey::Treasury, treasury);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Treasury, treasury);
 }
 
 pub fn has_treasury(env: &Env) -> bool {
@@ -393,57 +436,47 @@ pub fn get_pending_treasury(env: &Env) -> Option<crate::types::PendingAddressCha
 }
 
 pub fn set_pending_treasury(env: &Env, pending: &crate::types::PendingAddressChange) {
-    env.storage().persistent().set(&StorageKey::PendingTreasury, pending);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingTreasury, pending);
 }
 
 pub fn clear_pending_treasury(env: &Env) {
-    env.storage().persistent().remove(&StorageKey::PendingTreasury);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingTreasury);
 }
 
 // --- Outcome Token Storage ---
 
 pub fn get_outcome_token_contract(env: &Env) -> Option<Address> {
-    env.storage().persistent().get(&StorageKey::OutcomeTokenContract)
+    env.storage()
+        .persistent()
+        .get(&StorageKey::OutcomeTokenContract)
 }
 
 pub fn set_outcome_token_contract(env: &Env, contract: &Address) {
-    env.storage().persistent().set(&StorageKey::OutcomeTokenContract, contract);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OutcomeTokenContract, contract);
 }
 
 pub fn get_pending_outcome_token_contract(env: &Env) -> Option<crate::types::PendingAddressChange> {
-    env.storage().persistent().get(&StorageKey::PendingOutcomeToken)
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PendingOutcomeToken)
 }
 
 pub fn set_pending_outcome_token_contract(env: &Env, pending: &crate::types::PendingAddressChange) {
-    env.storage().persistent().set(&StorageKey::PendingOutcomeToken, pending);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingOutcomeToken, pending);
 }
 
 pub fn clear_pending_outcome_token_contract(env: &Env) {
-    env.storage().persistent().remove(&StorageKey::PendingOutcomeToken);
-}
-
-// --- Threshold Signers Storage ---
-
-pub fn get_threshold_signers(env: &Env) -> Vec<BytesN<32>> {
     env.storage()
         .persistent()
-        .get(&StorageKey::ThresholdSigners)
-        .unwrap_or_else(|| Vec::new(env))
-}
-
-pub fn set_threshold_signers(env: &Env, signers: &Vec<BytesN<32>>) {
-    env.storage().persistent().set(&StorageKey::ThresholdSigners, signers);
-}
-
-pub fn get_threshold_quorum(env: &Env) -> u32 {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::ThresholdQuorum)
-        .unwrap_or(0)
-}
-
-pub fn set_threshold_quorum(env: &Env, quorum: u32) {
-    env.storage().persistent().set(&StorageKey::ThresholdQuorum, &quorum);
+        .remove(&StorageKey::PendingOutcomeToken);
 }
 
 // --- Deposit Timestamp Storage (issue #413) ---
@@ -455,9 +488,10 @@ pub fn get_last_deposit_time(env: &Env, market_id: u32, user: &Address) -> Optio
 }
 
 pub fn set_last_deposit_time(env: &Env, market_id: u32, user: &Address, timestamp: u64) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::LastDepositTime(market_id, user.clone()), &timestamp);
+    env.storage().persistent().set(
+        &StorageKey::LastDepositTime(market_id, user.clone()),
+        &timestamp,
+    );
 }
 
 // --- Pending Renounce Storage (issue #414) ---
@@ -473,7 +507,9 @@ pub fn set_pending_renounce(env: &Env) {
 }
 
 pub fn clear_pending_renounce(env: &Env) {
-    env.storage().persistent().remove(&StorageKey::PendingRenounce);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingRenounce);
 }
 
 pub fn clear_admin(env: &Env) {
@@ -490,7 +526,9 @@ pub fn get_fee_rate_bps(env: &Env) -> i128 {
 }
 
 pub fn set_fee_rate_bps(env: &Env, fee_rate_bps: i128) {
-    env.storage().persistent().set(&StorageKey::FeeRateBps, &fee_rate_bps);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::FeeRateBps, &fee_rate_bps);
 }
 
 // --- Pending Fee Rate Change / Timelock (Issue #496) ---
@@ -500,19 +538,25 @@ pub fn get_pending_fee_rate_change(env: &Env) -> Option<PendingFeeRateChange> {
 }
 
 pub fn set_pending_fee_rate_change(env: &Env, pending: &PendingFeeRateChange) {
-    env.storage().persistent().set(&StorageKey::PendingFeeRate, pending);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingFeeRate, pending);
 }
 
 pub fn clear_pending_fee_rate_change(env: &Env) {
-    env.storage().persistent().remove(&StorageKey::PendingFeeRate);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingFeeRate);
 }
-
 
 // --- Pause Storage ---
 
 /// Check whether the contract is in a paused state.
 pub fn is_paused(env: &Env) -> bool {
-    env.storage().persistent().get(&StorageKey::Paused).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get(&StorageKey::Paused)
+        .unwrap_or(false)
 }
 
 /// Pause or unpause the contract (emergency halt).
@@ -541,16 +585,29 @@ pub fn set_emergency_mode(env: &Env, mode: &EmergencyMode) {
 
 // --- Oracle Adapter Enabled Flag (#488) ---
 
-pub fn get_pending_market_oracle(env: &Env, market_id: u32) -> Option<crate::types::PendingBytesNChange> {
-    env.storage().persistent().get(&StorageKey::PendingMarketOracle(market_id))
+pub fn get_pending_market_oracle(
+    env: &Env,
+    market_id: u32,
+) -> Option<crate::types::PendingBytesNChange> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PendingMarketOracle(market_id))
 }
 
-pub fn set_pending_market_oracle(env: &Env, market_id: u32, pending: &crate::types::PendingBytesNChange) {
-    env.storage().persistent().set(&StorageKey::PendingMarketOracle(market_id), pending);
+pub fn set_pending_market_oracle(
+    env: &Env,
+    market_id: u32,
+    pending: &crate::types::PendingBytesNChange,
+) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingMarketOracle(market_id), pending);
 }
 
 pub fn clear_pending_market_oracle(env: &Env, market_id: u32) {
-    env.storage().persistent().remove(&StorageKey::PendingMarketOracle(market_id));
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingMarketOracle(market_id));
 }
 
 /// Whether the given adapter type is live for resolution.
@@ -622,7 +679,9 @@ pub fn set_deposit_locked(env: &Env, locked: bool) {
 // --- Resolution Contract Storage ---
 
 pub fn get_resolution_contract(env: &Env) -> Option<Address> {
-    env.storage().persistent().get(&StorageKey::ResolutionContract)
+    env.storage()
+        .persistent()
+        .get(&StorageKey::ResolutionContract)
 }
 
 pub fn set_resolution_contract(env: &Env, contract: &Address) {
@@ -632,15 +691,21 @@ pub fn set_resolution_contract(env: &Env, contract: &Address) {
 }
 
 pub fn get_pending_resolution_contract(env: &Env) -> Option<crate::types::PendingAddressChange> {
-    env.storage().persistent().get(&StorageKey::PendingResolution)
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PendingResolution)
 }
 
 pub fn set_pending_resolution_contract(env: &Env, pending: &crate::types::PendingAddressChange) {
-    env.storage().persistent().set(&StorageKey::PendingResolution, pending);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingResolution, pending);
 }
 
 pub fn clear_pending_resolution_contract(env: &Env) {
-    env.storage().persistent().remove(&StorageKey::PendingResolution);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingResolution);
 }
 
 // --- Fee Waiver Storage (Issue #483) ---
@@ -705,7 +770,9 @@ pub fn get_fee_cap_bps(env: &Env) -> i128 {
 
 /// Set the hard upper bound on the fee rate (admin-gated in `lib.rs`).
 pub fn set_fee_cap_bps(env: &Env, cap_bps: i128) {
-    env.storage().persistent().set(&StorageKey::FeeCap, &cap_bps);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::FeeCap, &cap_bps);
 }
 
 /// Alias for `get_all_market_ids` used by `list_markets`.
@@ -725,9 +792,7 @@ pub fn append_market_id(env: &Env, market_id: u32) {
         .get(&StorageKey::MarketIds)
         .unwrap_or_else(|| Vec::new(env));
     ids.push_back(market_id);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::MarketIds, &ids);
+    env.storage().persistent().set(&StorageKey::MarketIds, &ids);
 }
 
 /// Return the ordered list of all market IDs ever created.
@@ -754,7 +819,9 @@ mod test {
         let env = Env::default();
         let contract_id = env.register(crate::MarketContract, ());
         env.as_contract(&contract_id, || {
-            env.storage().persistent().set(&StorageKey::StorageVersion, &0u32);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::StorageVersion, &0u32);
             assert_eq!(assert_version(&env), Err(ContractError::UpgradeRequired));
         });
     }
@@ -1002,7 +1069,10 @@ mod test {
         env.as_contract(&contract_id, || {
             assert_eq!(assert_version(&env), Err(ContractError::UpgradeRequired));
             assert_eq!(get_market(&env, 1), Err(ContractError::UpgradeRequired));
-            assert_eq!(get_position(&env, 1, &user), Err(ContractError::UpgradeRequired));
+            assert_eq!(
+                get_position(&env, 1, &user),
+                Err(ContractError::UpgradeRequired)
+            );
         });
     }
 
@@ -1045,7 +1115,9 @@ mod test {
         let env = Env::default();
         let contract_id = env.register(crate::MarketContract, ());
         env.as_contract(&contract_id, || {
-            env.storage().persistent().set(&StorageKey::StorageVersion, &(STORAGE_VERSION + 1));
+            env.storage()
+                .persistent()
+                .set(&StorageKey::StorageVersion, &(STORAGE_VERSION + 1));
             assert_eq!(assert_version(&env), Err(ContractError::UpgradeRequired));
         });
     }

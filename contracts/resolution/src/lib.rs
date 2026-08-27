@@ -56,7 +56,9 @@ mod test;
 mod bond_split_proptest;
 
 use crate::error::ContractError;
-use crate::types::{CandidateStatus, EmergencyMode, MarketStatus, ResolutionCandidate, ResolutionConfig};
+use crate::types::{
+    CandidateStatus, EmergencyMode, MarketStatus, ResolutionCandidate, ResolutionConfig,
+};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use soroban_sdk::{IntoVal, Symbol, Val, Vec};
@@ -266,10 +268,7 @@ impl ResolutionContract {
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: resolution proposals are blocked unless mode is Normal
-        require_emergency_mode_allows(
-            &env,
-            &[EmergencyMode::Normal],
-        )?;
+        require_emergency_mode_allows(&env, &[EmergencyMode::Normal])?;
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
         if bond_amount < MIN_BOND_AMOUNT {
@@ -290,7 +289,8 @@ impl ResolutionContract {
         // Verify the provided oracle signature by delegating to the market
         // contract's `verify_signature` entrypoint. This ensures proposals are
         // rejected early if the signature does not verify.
-        let args: Vec<Val> = soroban_sdk::vec![&env,
+        let args: Vec<Val> = soroban_sdk::vec![
+            &env,
             market_id.into_val(&env),
             outcome.into_val(&env),
             signature.clone().into_val(&env),
@@ -333,6 +333,96 @@ impl ResolutionContract {
             finalized_at: None,
             appeal_round: 0,
             bond_amount,
+            epoch: 0,
+            passphrase_hash: None,
+        };
+
+        storage::set_candidate(&env, &candidate);
+        events::emit_candidate_proposed(&env, &candidate);
+        Ok(candidate.id)
+    }
+
+    /// V2 counterpart of [`propose`] (#701): verifies the signed outcome via
+    /// the market contract's `verify_signature_v2` — binding the signature to
+    /// the network passphrase and a market resolution epoch, and carrying its
+    /// own `valid_until` expiry — instead of the legacy V1 `verify_signature`.
+    ///
+    /// This is the path resolution operators must use once a market contract
+    /// disables V1 (the default on a fresh deployment, #701): `finalize`
+    /// (and admin arbitration) will call `resolve_market_v2` for any
+    /// candidate proposed here, mirroring exactly the verification this
+    /// function already performed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_v2(
+        env: Env,
+        proposer: Address,
+        market_id: u32,
+        outcome: bool,
+        signature: BytesN<64>,
+        valid_until: u64,
+        epoch: u32,
+        passphrase_hash: BytesN<32>,
+        evidence_uri: String,
+        challenge_window_seconds: u64,
+        bond_amount: i128,
+    ) -> Result<u32, ContractError> {
+        proposer.require_auth();
+        let config = storage::get_config(&env);
+        require_emergency_mode_allows(&env, &[EmergencyMode::Normal])?;
+        validate_uri(&evidence_uri)?;
+        validate_challenge_window(challenge_window_seconds)?;
+        if bond_amount < MIN_BOND_AMOUNT {
+            return Err(ContractError::InsufficientBond);
+        }
+        if storage::get_candidate_id_for_market(&env, market_id).is_some() {
+            return Err(ContractError::CandidateAlreadyExists);
+        }
+        require_market_active(&env, &config, market_id)?;
+
+        // Verify the provided V2 oracle signature by delegating to the
+        // market contract's `verify_signature_v2` entrypoint.
+        let args: Vec<Val> = soroban_sdk::vec![
+            &env,
+            passphrase_hash.into_val(&env),
+            market_id.into_val(&env),
+            outcome.into_val(&env),
+            valid_until.into_val(&env),
+            epoch.into_val(&env),
+            signature.clone().into_val(&env),
+        ];
+        let verification: Result<(), ContractError> = env.invoke_contract(
+            &config.market_contract,
+            &Symbol::new(&env, "verify_signature_v2"),
+            args,
+        );
+        verification?;
+
+        let collateral_token = get_collateral_token(&env, &config, market_id);
+        let token_client = TokenClient::new(&env, &collateral_token);
+        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
+
+        let proposed_at = env.ledger().timestamp();
+        if valid_until < proposed_at {
+            return Err(ContractError::InvalidSignatureExpiry);
+        }
+        let candidate = ResolutionCandidate {
+            id: storage::increment_candidate_id(&env),
+            market_id,
+            outcome,
+            signature,
+            signature_expiry: valid_until,
+            proposer,
+            evidence_uri,
+            proposed_at,
+            challenge_deadline: proposed_at + challenge_window_seconds,
+            status: CandidateStatus::Proposed,
+            challenged_by: None,
+            challenge_uri: None,
+            finalized_at: None,
+            appeal_round: 0,
+            bond_amount,
+            epoch,
+            passphrase_hash: Some(passphrase_hash),
         };
 
         // Effects: persist the new candidate (status = Proposed) *before*
@@ -381,10 +471,7 @@ impl ResolutionContract {
         // Emergency mode: challenges are blocked in SettleOnly and GlobalFreeze
         require_emergency_mode_allows(
             &env,
-            &[
-                EmergencyMode::Normal,
-                EmergencyMode::TradingHalted,
-            ],
+            &[EmergencyMode::Normal, EmergencyMode::TradingHalted],
         )?;
         validate_uri(&challenge_uri)?;
         if bond_amount < MIN_CHALLENGE_BOND_AMOUNT {
@@ -465,10 +552,7 @@ impl ResolutionContract {
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: appeals are blocked unless mode is Normal
-        require_emergency_mode_allows(
-            &env,
-            &[EmergencyMode::Normal],
-        )?;
+        require_emergency_mode_allows(&env, &[EmergencyMode::Normal])?;
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
 
@@ -480,6 +564,15 @@ impl ResolutionContract {
         if candidate.appeal_round >= MAX_APPEAL_ROUNDS {
             return Err(ContractError::AppealLimitExceeded);
         }
+        // `appeal` only re-verifies via the legacy V1 `verify_signature`
+        // (#701). A candidate originally proposed via `propose_v2` must not
+        // be silently downgraded to a V1-verified signature while
+        // `finalize`/arbitration still treat it as V2 (its `passphrase_hash`
+        // would stay set from the original proposal) — reject outright
+        // rather than allow that inconsistency.
+        if candidate.passphrase_hash.is_some() {
+            return Err(ContractError::Unauthorized);
+        }
 
         // Defense in depth (Issue #497): the market should be unresolved for
         // any Challenged candidate under normal operation, but re-check in
@@ -487,7 +580,8 @@ impl ResolutionContract {
         require_market_active(&env, &config, candidate.market_id)?;
 
         // Re-verify the new signed outcome the same way `propose` does.
-        let args: Vec<Val> = soroban_sdk::vec![&env,
+        let args: Vec<Val> = soroban_sdk::vec![
+            &env,
             candidate.market_id.into_val(&env),
             outcome.into_val(&env),
             signature.clone().into_val(&env),
@@ -648,10 +742,7 @@ impl ResolutionContract {
         proposer.require_auth();
         storage::assert_version(&env)?;
         // Emergency mode: collateral deposits are blocked unless mode is Normal
-        require_emergency_mode_allows(
-            &env,
-            &[EmergencyMode::Normal],
-        )?;
+        require_emergency_mode_allows(&env, &[EmergencyMode::Normal])?;
         if amount <= 0 {
             return Err(ContractError::InvalidCollateral);
         }
@@ -756,6 +847,29 @@ impl ResolutionContract {
         storage::get_challengers(&env, candidate_id)
     }
 
+    // ── Emergency Mode (Issue #662) ─────────────────────────────────────────
+
+    /// Set the mirrored emergency mode (admin only). Operators should keep
+    /// this value in sync with the Market and Treasury contracts for
+    /// coordinated behaviour.
+    pub fn set_emergency_mode(
+        env: Env,
+        admin: Address,
+        new_mode: EmergencyMode,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::set_emergency_mode(&env, &new_mode);
+        events::emit_emergency_mode_changed(&env, &new_mode, &admin);
+        Ok(())
+    }
+
+    /// Return the current mirrored emergency mode.
+    pub fn get_emergency_mode(env: Env) -> EmergencyMode {
+        storage::get_emergency_mode(&env)
+    }
+
     /// Admin-only, timelocked: uphold the proposer's currently-disputed
     /// outcome once `MAX_APPEAL_ROUNDS` have been exhausted and
     /// `ARBITRATION_TIMELOCK_SECONDS` have elapsed since the last challenge
@@ -805,6 +919,8 @@ impl ResolutionContract {
             &Symbol::new(&env, "resolve_market"),
             args,
         );
+
+        invoke_resolve_market(&env, &config, &candidate);
 
         Ok(candidate)
     }
@@ -899,6 +1015,23 @@ impl ResolutionContract {
 fn require_admin(admin: &Address, config: &ResolutionConfig) -> Result<(), ContractError> {
     if admin != &config.admin {
         return Err(ContractError::NotAdmin);
+    }
+    Ok(())
+}
+
+/// Guard: reject operations that are not permitted under the current
+/// emergency mode (Issue #662).
+///
+/// `allowed_modes` specifies the set of modes under which the guarded
+/// operation is permitted. If the current mode is not in this set, the call
+/// is rejected with [`ContractError::EmergencyModeActive`].
+fn require_emergency_mode_allows(
+    env: &Env,
+    allowed_modes: &[EmergencyMode],
+) -> Result<(), ContractError> {
+    let current = storage::get_emergency_mode(env);
+    if !allowed_modes.contains(&current) {
+        return Err(ContractError::EmergencyModeActive);
     }
     Ok(())
 }

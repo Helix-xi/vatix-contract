@@ -20,7 +20,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 
 | Entrypoint                     | require_auth | admin-equality check | Notes |
 |---------------------------------|:---:|:---:|-------|
-| `initialize`                   | ✅ | n/a (bootstraps admin) | Guarded by `AlreadyInitialized` instead. |
+| `initialize`                   | ✅ | n/a (bootstraps admin) | Guarded by `AlreadyInitialized` instead. As of #701, also defaults legacy V1 oracle signatures (`OracleV1Disabled`) to disabled — a fresh deployment fails closed until the admin explicitly re-enables V1 via `set_oracle_v1_disabled`. |
 | `propose_admin`                 | — | ✅ (`storage::get_admin`) | Auth deferred to `accept_admin`. |
 | `accept_admin`                  | ✅ | ✅ (must match `PendingAdmin`) | Two-step transfer. |
 | `cancel_admin_transfer`          | ✅ | ✅ | Cancels a pending `propose_admin`. |
@@ -84,10 +84,13 @@ identity — it is a market-contract-facing entrypoint, not an admin mutator.
 | `arbitrate_uphold_proposer`      | ✅ | ✅ (`require_admin`) | Terminal, timelocked (`ARBITRATION_TIMELOCK_SECONDS`, 48h) dispute path: upholds the proposer once `MAX_APPEAL_ROUNDS` are exhausted. |
 | `void_market`                    | ✅ | ✅ (`require_admin`) | Terminal, timelocked dispute path: voids the market (→ `Canceled`) when neither side can be safely vindicated on-chain. |
 
-`propose`, `challenge`, `appeal`, `finalize`, and `deposit_collateral` all
-`require_auth()` the acting party (proposer/challenger/finalizer) but are
-deliberately open to any caller — the bond, challenge window, and finalize
-conditions are the access control, not an admin check.
+`propose`, `propose_v2`, `challenge`, `appeal`, `finalize`, and
+`deposit_collateral` all `require_auth()` the acting party
+(proposer/challenger/finalizer) but are deliberately open to any caller —
+the bond, challenge window, and finalize conditions are the access control,
+not an admin check. `propose_v2` (#701) is the V2-oracle counterpart of
+`propose`: same access model, verified via the market contract's
+`verify_signature_v2` instead of the legacy `verify_signature`.
 
 ## Outcome-token contract (`contracts/outcome-token/src/lib.rs`)
 
