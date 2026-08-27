@@ -36,6 +36,7 @@ events additionally carry a `version: u32 (topic)` field
 | `market_closed_to_deposits` | `version: u32 (topic)`, `market_id: u32 (topic)`, `admin: Address`, `closed_at: u64` | An admin closes a market to new collateral deposits |
 | `market_resolved` | `version: u32 (topic)`, `market_id: u32 (topic)`, `oracle_pubkey: BytesN<32>`, `resolver: Address`, `outcome: bool`, `resolved_at: u64` | A market is resolved with an oracle-signed outcome |
 | `market_canceled` | `version: u32 (topic)`, `market_id: u32 (topic)`, `canceler: Address`, `canceled_at: u64` | An admin cancels a market before resolution |
+| `market_voided` | `version: u32 (topic)`, `market_id: u32 (topic)`, `voided_by: Address`, `voided_at: u64` | The registered resolution contract voids a market via `void_market` (Issue #708) — dispute outcome where neither side could be vindicated on-chain; `voided_by` is the resolution contract address. Distinct from `market_canceled` (admin `cancel_market`) though both land in `Canceled`. |
 | `position_limit_exceeded` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `side_yes: bool` | A trade/position change is rejected because a share balance would go negative |
 | `position_updated` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `yes_shares: i128`, `no_shares: i128`, `locked_collateral: i128` | A user's position (share balances / locked collateral) changes |
 | `trade_executed` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `quantity: i128`, `price_bps: i128`, `side_yes: bool`, `executed_at: u64` | A user executes a trade (buy or sell of YES/NO shares) |
@@ -84,6 +85,7 @@ events additionally carry a `version: u32 (topic)` field
 | `candidate_finalized` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `finalized_at: u64` | A candidate is finalized after its challenge window closes (`finalize`) — invokes `resolve_market` or `resolve_market_v2` on the market contract depending on how the candidate was proposed (#701) |
 | `candidate_appealed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `proposer: Address`, `appeal_round: u32`, `evidence_uri: String`, `challenge_deadline: u64`, `appealed_at: u64` | A challenged candidate is re-proposed/appealed for another round. V1-only (`appeal` rejects a V2-proposed candidate, #701) |
 | `emergency_mode_changed` | `new_mode: EmergencyMode (topic)`, `admin: Address`, `changed_at: u64` | Admin changes the mirrored emergency mode (`set_emergency_mode`), coordinated with the Market and Treasury contracts (#662, wired up for resolution by #701) |
+| `market_voided` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `voided_at: u64` | Resolution `void_market` runs: the proposer's bond is split/slashed, challengers are refunded, and the market contract's `void_market` is invoked to move the market to `Canceled` (Issue #708). The market contract emits its own `market_voided` for the status transition. |
 
 ## Outcome Token (`contracts/outcome-token/src/events.rs`)
 

@@ -16,6 +16,7 @@
 //! | `WithdrawEdgeCase`       | `withdraw_edge_case`                |
 //! | `MarketResolved`         | `market_resolved`                   |
 //! | `MarketCanceled`         | `market_canceled`                   |
+//! | `MarketVoided`           | `market_voided`                     |
 //! | `PositionSettled`        | `position_settled`                  |
 //! | `PositionUpdated`        | `position_updated`                  |
 //! | `PositionLimitExceeded`  | `position_limit_exceeded`           |
@@ -462,6 +463,45 @@ pub fn emit_market_canceled(env: &Env, market_id: u32, canceler: &Address, cance
         market_id,
         canceler: canceler.clone(),
         canceled_at,
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketVoided {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    /// The registered resolution contract address that voided the market.
+    pub voided_by: Address,
+    pub voided_at: u64,
+}
+
+/// Emit a `MarketVoided` event.
+///
+/// Published when the registered resolution contract voids a market via
+/// [`crate::MarketContract::void_market`] (Issue #708) — the dispute path
+/// where neither side could be safely vindicated on-chain, so the market is
+/// force-transitioned to [`crate::types::MarketStatus::Canceled`] and users
+/// reclaim collateral through `withdraw_canceled_collateral`.
+///
+/// Distinct from [`MarketCanceled`] (admin-initiated `cancel_market`) so
+/// indexers can tell a governance cancellation apart from a resolution-driven
+/// void, even though both land the market in the same `Canceled` state.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `market_id` - Unique identifier of the voided market
+/// * `voided_by` - The registered resolution contract address
+/// * `voided_at` - Unix timestamp (ledger time) when the void occurred
+pub fn emit_market_voided(env: &Env, market_id: u32, voided_by: &Address, voided_at: u64) {
+    MarketVoided {
+        version: EVENT_VERSION,
+        market_id,
+        voided_by: voided_by.clone(),
+        voided_at,
     }
     .publish(env);
 }
@@ -1532,6 +1572,47 @@ mod tests {
             .into_val(&env);
         assert_eq!(canceler_val, canceler);
         assert_eq!(canceled_at_val, canceled_at);
+    }
+
+    #[test]
+    fn test_emit_market_voided() {
+        let env = Env::default();
+        let contract_id = env.register(MarketContract, ());
+
+        let market_id = 7u32;
+        let voided_by = Address::generate(&env);
+        let voided_at = 1_700_000_000u64;
+
+        env.as_contract(&contract_id, || {
+            emit_market_voided(&env, market_id, &voided_by, voided_at);
+        });
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+
+        let event = events.first().unwrap();
+        let topics = &event.1;
+
+        let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
+        assert_eq!(topic0, Symbol::new(&env, "market_voided"));
+
+        let topic1: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
+
+        let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
+        let voided_by_val: Address = data
+            .get(Symbol::new(&env, "voided_by"))
+            .unwrap()
+            .into_val(&env);
+        let voided_at_val: u64 = data
+            .get(Symbol::new(&env, "voided_at"))
+            .unwrap()
+            .into_val(&env);
+        assert_eq!(voided_by_val, voided_by);
+        assert_eq!(voided_at_val, voided_at);
     }
 
     #[test]

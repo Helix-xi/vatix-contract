@@ -1505,4 +1505,44 @@ mod tests {
         // No positions exist for any ghost address — payout is 0, not an error.
         assert_eq!(result, Ok(0));
     }
+
+    /// Issue #706: the gas-griefing cap is exactly 100. Pinned as an explicit
+    /// value so a change to the constant is a deliberate, reviewed edit (the
+    /// AUTH_TABLE / griefing analysis references this number).
+    #[test]
+    fn test_max_batch_settle_size_constant_is_100() {
+        assert_eq!(crate::MAX_BATCH_SETTLE_SIZE, 100);
+    }
+
+    /// Issue #706: the empty-batch and oversize-batch guards fire before the
+    /// market is even loaded, so they reject regardless of market state — i.e.
+    /// a griefing caller cannot burn gas iterating an unbounded (or spoofed
+    /// empty) list. Complements the resolved-market coverage above by pinning
+    /// the guard ordering: `BatchTooLarge` wins over `MarketNotFound`.
+    #[test]
+    fn test_batch_settle_size_guards_precede_market_load() {
+        use crate::MarketContract;
+        let env = soroban_sdk::Env::default();
+        let contract_id = env.register(MarketContract, ());
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+        });
+
+        // Empty list → BatchTooLarge, even though market 12345 does not exist.
+        let empty: Vec<Address> = Vec::new(&env);
+        assert_eq!(
+            env.as_contract(&contract_id, || batch_settle_positions(&env, 12345, empty)),
+            Err(ContractError::BatchTooLarge),
+        );
+
+        // 101 entries → BatchTooLarge, again before any market lookup.
+        let mut oversized: Vec<Address> = Vec::new(&env);
+        for _ in 0..=crate::MAX_BATCH_SETTLE_SIZE {
+            oversized.push_back(Address::generate(&env));
+        }
+        assert_eq!(
+            env.as_contract(&contract_id, || batch_settle_positions(&env, 12345, oversized)),
+            Err(ContractError::BatchTooLarge),
+        );
+    }
 }

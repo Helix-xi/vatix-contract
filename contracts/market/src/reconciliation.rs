@@ -58,6 +58,16 @@ fn load_token_balances(env: &Env, market_id: u32, user: &Address) -> Option<(i12
 /// When no outcome-token contract is registered there is no second ledger to
 /// diverge from, so parity is vacuously satisfied (token balances mirror
 /// shares 1:1).
+///
+/// A **settled** position is likewise reported as matched regardless of the
+/// raw balances (Issue #708 / #578 parity): every settle path
+/// (`settle_position`, `batch_settle_positions`, `settle_positions_page`)
+/// burns the position's outcome tokens back to zero on full exit while the
+/// `Position` row is deliberately retained as a historical record — its
+/// `yes_shares` / `no_shares` are *not* zeroed. Without this carve-out every
+/// settled position would report `is_matched: false` forever, and
+/// [`reconcile_position_tokens`] would "repair" it by **re-minting the
+/// tokens that settlement just burned**.
 pub fn get_position_token_parity(
     env: &Env,
     market_id: u32,
@@ -69,13 +79,16 @@ pub fn get_position_token_parity(
     let (yes_token_balance, no_token_balance) = load_token_balances(env, market_id, user)
         .unwrap_or((position.yes_shares, position.no_shares));
 
+    let is_matched = position.is_settled
+        || (yes_token_balance == position.yes_shares
+            && no_token_balance == position.no_shares);
+
     Ok(PositionTokenParity {
         yes_shares: position.yes_shares,
         no_shares: position.no_shares,
         yes_token_balance,
         no_token_balance,
-        is_matched: yes_token_balance == position.yes_shares
-            && no_token_balance == position.no_shares,
+        is_matched,
     })
 }
 
@@ -181,6 +194,58 @@ mod tests {
         assert!(parity.is_matched);
         assert_eq!(parity.yes_shares, 0);
         assert_eq!(parity.no_shares, 0);
+    }
+
+    /// Issue #708 / #578 parity: once a position is settled, every settle path
+    /// burns its outcome tokens back to zero while the `Position` row is kept
+    /// as a historical record (shares not zeroed). The parity view must report
+    /// such a position as matched — otherwise `reconcile_position_tokens`
+    /// would re-mint the tokens settlement just burned.
+    #[test]
+    fn test_settled_position_reports_matched_even_though_tokens_burned() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let market_contract_id = env.register(MarketContract, ());
+        let admin = <Address as TestAddress>::generate(&env);
+        let user = <Address as TestAddress>::generate(&env);
+        let market_id = 1u32;
+
+        let outcome_token_id = env.register(OutcomeTokenContract, ());
+        OutcomeTokenContractClient::new(&env, &outcome_token_id).initialize(
+            &admin,
+            &market_contract_id,
+            &String::from_str(&env, "Vatix Outcome Token"),
+            &String::from_str(&env, "VOT"),
+        );
+
+        let parity = env.as_contract(&market_contract_id, || {
+            storage::set_version(&env);
+            storage::set_outcome_token_contract(&env, &outcome_token_id);
+
+            // A fully-exited, settled position: 100 YES shares on record, but
+            // the outcome-token balance is 0 (burned on settlement).
+            let mut position = Position::new_empty(market_id, user.clone());
+            position.yes_shares = 100 * STROOPS_PER_USDC;
+            position.is_settled = true;
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+
+            get_position_token_parity(&env, market_id, &user).unwrap()
+        });
+
+        assert!(
+            parity.is_matched,
+            "a settled position must report matched despite burned tokens"
+        );
+        assert_eq!(parity.yes_shares, 100 * STROOPS_PER_USDC);
+        assert_eq!(parity.yes_token_balance, 0);
+
+        // And the admin repair path is a no-op (does not re-mint).
+        let repaired = env.as_contract(&market_contract_id, || {
+            reconcile_position_tokens(&env, &admin, market_id, &user).unwrap()
+        });
+        assert!(repaired.is_matched);
+        assert_eq!(repaired.yes_token_balance, 0);
     }
 
     /// Full setup: a Market contract wired to a real OutcomeToken contract, one
