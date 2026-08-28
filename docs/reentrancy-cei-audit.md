@@ -36,6 +36,7 @@
 ### 1. `withdraw_unused_collateral` (`withdraw.rs`)
 - **Before:** Fee routing (`token_client.transfer` and `env.invoke_contract`) was executed prior to updating `position.total_deposited` and persisting it with `storage::set_position`.
 - **After:** Decremented `position.total_deposited` and called `storage::set_position` **first**, satisfying CEI before making external token/treasury calls.
+- **Follow-up (#709):** A later bad merge left the final user payout `token_client.transfer(&contract_address, &user, &amount)` **duplicated**, which would pay the user twice and over-draw the contract's custodied collateral. The duplicate call was removed — the user payout is now a single external transfer, ordered after `set_position` and after the fee routing, as CEI requires.
 
 ### 2. `settle_position` (`settlement.rs`)
 - **Before:** Outcome tokens were burned via `burn_settled_outcome_tokens` (external contract calls) before persisting the updated `Position` state to storage.

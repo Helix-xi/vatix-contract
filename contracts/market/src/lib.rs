@@ -281,6 +281,18 @@ impl MarketContract {
         if current_admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
+
+        // 4. The current admin must actually authorize this call. Without this
+        //    a bad merge previously left `propose_admin` unauthenticated:
+        //    `current_admin` is a plain parameter, so anyone could pass the
+        //    real admin's address, nominate themselves, then self-`accept_admin`
+        //    (which only checks the *new* admin's auth) to seize the contract.
+        current_admin.require_auth();
+
+        // 5. Reject a contract address as the nominee (mirrors `initialize`);
+        //    `accept_admin` cannot `require_auth` a contract that never signs.
+        validation::validate_admin_address(&new_admin)?;
+
         storage::set_pending_admin(&env, &new_admin);
         events::emit_admin_transfer_proposed(&env, &current_admin, &new_admin);
 
