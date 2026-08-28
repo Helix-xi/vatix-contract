@@ -17,6 +17,10 @@ cd "$ROOT"
 
 BUDGET="${MARKET_WASM32_SIZE_BUDGET:-65536}"
 MANIFEST="contracts/market/Cargo.toml"
+# Canonical artefact path documented by contracts/market/Makefile.
+# Do not glob or fall back to an unrelated *.wasm — that can size the wrong
+# binary and let an oversized market contract pass CI (#734 review).
+CANONICAL_WASM="target/wasm32v1-none/release/vatix_market_contract.wasm"
 
 log() { printf '[wasm-budget] %s\n' "$*" >&2; }
 
@@ -28,7 +32,7 @@ fi
 size_of() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
-    log "ERROR: missing wasm artifact: $path"
+    log "ERROR: missing canonical wasm artifact: $path"
     exit 1
   fi
   wc -c < "$path" | tr -d ' '
@@ -39,11 +43,7 @@ build_and_check() {
   shift
   log "Building market crate ($label)..."
   stellar contract build --manifest-path "$MANIFEST" "$@"
-  local wasm
-  wasm="$(find target/wasm32v1-none/release -maxdepth 1 -name 'vatix_market_contract*.wasm' ! -name '*.opt.wasm' | head -n1)"
-  if [[ -z "${wasm}" ]]; then
-    wasm="$(find target/wasm32v1-none/release -maxdepth 1 -name '*.wasm' ! -name '*.opt.wasm' | head -n1)"
-  fi
+  local wasm="$CANONICAL_WASM"
   local bytes
   bytes="$(size_of "$wasm")"
   log "$label: $wasm ($bytes bytes, budget $BUDGET)"
