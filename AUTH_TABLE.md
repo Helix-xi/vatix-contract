@@ -27,6 +27,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | `initialize_market`             | ✅ | ✅ | |
 | `cancel_market`                 | ✅ | ✅ | |
 | `reopen_market`                 | ✅ | ✅ | Only sanctioned `Canceled` → `Active` path. |
+| `void_market`                    | ✅ (`caller`) | n/a — cross-contract equality check | Issue #708. Callable **only** by the registered resolution contract (`storage::get_resolution_contract`); every other caller — admin included — gets `Unauthorized`, and an unset resolution contract fails closed with `Unauthorized`. Forces `Active` → `Canceled` for the resolution `void_market` dispute outcome; `Resolved`/`Canceled` markets are rejected. |
 | `close_market_to_deposits`      | ✅ | ✅ | Idempotent; always emits an event, even when already closed. |
 | `set_oracle_v1_disabled`        | ✅ | ✅ | Legacy Ed25519-v1 kill switch (#657). |
 | `set_adapter_enabled`           | ✅ | ✅ | Enables/disables the Reflector/Pyth adapter; fails closed to direct Ed25519 verification while disabled — never a silent fallback while an adapter is *enabled but unavailable*. |

@@ -75,6 +75,17 @@ address) is exactly the "partial upgrade bricks finalize" failure mode this
 playbook exists to catch. Always re-wire both sides of a relationship in the
 same maintenance window.
 
+**`Market::void_market` (Issue #708).** The resolution contract's
+`void_market` dispute path invokes `MarketContract::void_market(caller,
+market_id)` as its final step. That market entrypoint authorizes the call by
+requiring `caller == storage::get_resolution_contract(env)` and **fails
+closed with `Unauthorized`** when no resolution contract is registered or the
+caller is anyone else (the admin included). So the Market↔Resolution wiring
+in step 5 must be complete before a `void_market` can succeed, and after any
+Resolution redeployment `Market::set_resolution_contract` must be pointed at
+the new address in the same window — otherwise a stuck disputed market cannot
+be voided.
+
 ## WASM hash pinning
 
 [`scripts/verify-wasm-hash.sh`](../verify-wasm-hash.sh) computes the

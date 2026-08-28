@@ -2817,6 +2817,136 @@ mod test {
         assert_eq!(client.get_resolution_contract(), Some(resolution_contract));
     }
 
+    // ========== Issue #708: void_market caller authorization ==========
+    //
+    // `void_market` is the market-side half of the resolution contract's
+    // `void_market` arbitration outcome. It must be callable ONLY by the
+    // registered resolution contract — a wrong caller (including the admin)
+    // must never be able to void a live market, and an unset resolution
+    // contract must fail closed.
+
+    /// Register `resolution` as the market's resolution contract by writing
+    /// storage directly (there is no instant public setter — the production
+    /// path is the `propose_resolution_contract` / `execute_resolution_contract`
+    /// timelock pair).
+    fn wire_resolution_contract(env: &Env, contract_id: &Address, resolution: &Address) {
+        env.as_contract(contract_id, || {
+            storage::set_resolution_contract(env, resolution);
+        });
+    }
+
+    fn new_active_market(env: &Env, client: &MarketContractClient<'_>, admin: &Address) -> u32 {
+        client.initialize_market(
+            admin,
+            &String::from_str(env, "Void me?"),
+            &(env.ledger().timestamp() + 86_400),
+            &BytesN::from_array(env, &[3u8; 32]),
+            &Address::generate(env),
+            &None,
+        )
+    }
+
+    #[test]
+    fn test_void_market_by_registered_resolution_contract_cancels() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolution = Address::generate(&env);
+        wire_resolution_contract(&env, &contract_id, &resolution);
+
+        let market_id = new_active_market(&env, &client, &admin);
+
+        let events_before = env.events().all().len();
+        client.void_market(&resolution, &market_id);
+
+        assert_eq!(client.get_market(&market_id).status, MarketStatus::Canceled);
+        // The authoritative status-transition emits at least one event
+        // (`MarketVoided`); the exact topic/payload is asserted in
+        // `events::tests::test_emit_market_voided`.
+        assert!(env.events().all().len() > events_before);
+    }
+
+    #[test]
+    fn test_void_market_rejects_non_resolution_caller() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolution = Address::generate(&env);
+        wire_resolution_contract(&env, &contract_id, &resolution);
+
+        let market_id = new_active_market(&env, &client, &admin);
+
+        let stranger = Address::generate(&env);
+        let result = client.try_void_market(&stranger, &market_id);
+        assert_eq!(result, Err(Ok(crate::error::ContractError::Unauthorized)));
+        assert_eq!(client.get_market(&market_id).status, MarketStatus::Active);
+    }
+
+    #[test]
+    fn test_void_market_rejects_admin_caller() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolution = Address::generate(&env);
+        wire_resolution_contract(&env, &contract_id, &resolution);
+
+        let market_id = new_active_market(&env, &client, &admin);
+
+        // Even the admin cannot void a market — only the resolution contract.
+        let result = client.try_void_market(&admin, &market_id);
+        assert_eq!(result, Err(Ok(crate::error::ContractError::Unauthorized)));
+        assert_eq!(client.get_market(&market_id).status, MarketStatus::Active);
+    }
+
+    #[test]
+    fn test_void_market_fails_closed_when_no_resolution_contract_registered() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let market_id = new_active_market(&env, &client, &admin);
+
+        let anyone = Address::generate(&env);
+        let result = client.try_void_market(&anyone, &market_id);
+        assert_eq!(result, Err(Ok(crate::error::ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_void_market_rejects_already_resolved_market() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolution = Address::generate(&env);
+        wire_resolution_contract(&env, &contract_id, &resolution);
+
+        let market_id = new_active_market(&env, &client, &admin);
+        env.as_contract(&contract_id, || {
+            let mut m = storage::get_market(&env, market_id).unwrap().unwrap();
+            m.status = MarketStatus::Resolved;
+            m.result = Some(true);
+            storage::set_market(&env, market_id, &m).unwrap();
+        });
+
+        let result = client.try_void_market(&resolution, &market_id);
+        assert_eq!(
+            result,
+            Err(Ok(crate::error::ContractError::MarketAlreadyResolved))
+        );
+    }
+
+    #[test]
+    fn test_void_market_rejects_already_canceled_market() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolution = Address::generate(&env);
+        wire_resolution_contract(&env, &contract_id, &resolution);
+
+        let market_id = new_active_market(&env, &client, &admin);
+        client.void_market(&resolution, &market_id);
+
+        // A second void is rejected — no silent double-transition.
+        let result = client.try_void_market(&resolution, &market_id);
+        assert_eq!(result, Err(Ok(crate::error::ContractError::MarketNotActive)));
+    }
+
+    #[test]
+    fn test_void_market_rejects_unknown_market() {
+        let (env, _admin, client, contract_id) = create_test_contract();
+        let resolution = Address::generate(&env);
+        wire_resolution_contract(&env, &contract_id, &resolution);
+
+        let result = client.try_void_market(&resolution, &999u32);
+        assert_eq!(result, Err(Ok(crate::error::ContractError::MarketNotFound)));
+    }
+
     // ========== Fee cap hardening: set-time and execute-time enforcement ==========
 
     #[test]

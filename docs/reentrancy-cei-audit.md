@@ -15,6 +15,7 @@
 | **Market** | `withdraw_unused_collateral` | External fee transfer & `collect_fee` call occurred **before** `storage::set_position`. | High | **Fixed** |
 | **Market** | `settle_position` | Outcome token `burn()` external call occurred **before** `storage::set_position`. | Medium | **Fixed** |
 | **Market** | `deposit_collateral` | External collateral `transfer()` occurred **before** `storage::set_position` / `add_market_participant` / `set_last_deposit_time`. | Medium | **Fixed** |
+| **Market** | `void_market` (Issue #708) | No external calls: the caller-identity check reads `storage::get_resolution_contract`, the status flips to `Canceled` via `storage::set_market`, then `emit_market_voided` publishes. No token transfer or cross-contract invoke on this path. | — | No violation (CEI-ordered: check → effect → event) |
 | **Treasury** | `withdraw_fees` | External `transfer()` occurred **before** `storage::set_token_balance` / `set_total_collected`. | High | **Fixed** |
 | **Treasury** | `distribute_fees` | Per-stakeholder external `transfer()` calls occurred **inside** the accumulation loop, **before** `storage::set_token_balance` was updated with the reduced balance. | High | **Fixed** |
 | **Treasury** | `collect_fee` | No external token call — the caller (a market contract) moves funds separately; `collect_fee` only records the accounting entry. | — | No violation (informational) |

@@ -1008,6 +1008,75 @@ impl MarketContract {
         Ok(())
     }
 
+    /// Void a market at the direction of the registered resolution contract
+    /// (Issue #708).
+    ///
+    /// This is the market-side half of the resolution contract's `void_market`
+    /// arbitration outcome: when a dispute cannot be safely vindicated
+    /// on-chain for either side, the resolution contract slashes/refunds the
+    /// posted bonds and then calls this to force the market to
+    /// [`MarketStatus::Canceled`], unsticking it so users can reclaim their
+    /// collateral via [`Self::withdraw_canceled_collateral`].
+    ///
+    /// # Authorization
+    /// Callable **only** by the address registered as the resolution contract
+    /// (see [`Self::propose_resolution_contract`] /
+    /// [`Self::execute_resolution_contract`]). Every other caller — the admin
+    /// included — is rejected with [`ContractError::Unauthorized`], and the
+    /// call also fails closed with [`ContractError::Unauthorized`] when no
+    /// resolution contract is registered at all, so a wrong or malicious
+    /// caller can never void a live market.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Must be the registered resolution contract (authorizes the call)
+    /// * `market_id` - Identifier of the market to void
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] – the contract is not initialized
+    /// - [`ContractError::Unauthorized`] – `caller` is not the registered
+    ///   resolution contract, or none is registered
+    /// - [`ContractError::MarketNotFound`] – the market does not exist
+    /// - [`ContractError::MarketAlreadyResolved`] – the market already has a
+    ///   final outcome and cannot be voided
+    /// - [`ContractError::MarketNotActive`] – the market is already canceled
+    ///
+    /// # Events
+    /// Emits [`events::MarketVoided`] with `market_id`, `voided_by`, and
+    /// `voided_at` on success.
+    pub fn void_market(env: Env, caller: Address, market_id: u32) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        // Intentionally NOT gated by `require_not_paused`: voiding is the
+        // sanctioned unstick path for a market frozen mid-dispute, and the
+        // only possible caller is the resolution contract itself.
+        caller.require_auth();
+
+        // Fail closed: an unset resolution contract means nobody is authorized
+        // to void — never fall back to admin or open access.
+        let resolution_contract =
+            storage::get_resolution_contract(&env).ok_or(ContractError::Unauthorized)?;
+        if caller != resolution_contract {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Checks: load the market and enforce the void policy (Active only).
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        match market.status {
+            MarketStatus::Resolved => return Err(ContractError::MarketAlreadyResolved),
+            MarketStatus::Canceled => return Err(ContractError::MarketNotActive),
+            MarketStatus::Active => {}
+        }
+
+        // Effects: transition to Canceled and persist before emitting.
+        market.status = MarketStatus::Canceled;
+        storage::set_market(&env, market_id, &market)?;
+
+        events::emit_market_voided(&env, market_id, &caller, env.ledger().timestamp());
+
+        Ok(())
+    }
+
     /// Reclaim deposited collateral from a canceled market.
     ///
     /// When a market is canceled before resolution there is no winning outcome,

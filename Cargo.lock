@@ -2014,6 +2014,7 @@ dependencies = [
 name = "vatix-resolution-contract"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
@@ -2021,6 +2022,7 @@ dependencies = [
 name = "vatix-treasury-contract"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
