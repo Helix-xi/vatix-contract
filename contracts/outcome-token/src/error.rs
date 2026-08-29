@@ -15,10 +15,18 @@ pub enum ContractError {
     /// belong to has settled its outcome.
     MarketNotResolved = 7,
     /// The on-chain storage schema version does not match the version this
-    /// contract build expects (Issue #696). Mirrors
-    /// `vatix_market_contract::ContractError::UpgradeRequired` /
-    /// `vatix_treasury_contract::TreasuryError::UpgradeRequired` — blocks
-    /// `mint`/`burn`/`transfer` against a stale on-chain layout after a
-    /// partial cross-contract upgrade instead of silently corrupting balances.
+    /// contract build expects (Issue #696).
     UpgradeRequired = 8,
+    /// A peer-to-peer `transfer` was attempted after the associated market
+    /// resolved. Settlement uses `Position` records keyed to the original
+    /// depositor's address, not outcome-token holders — transferring after
+    /// resolution would allow the same claim to be settled twice (Issue #690).
+    TransferBlockedAfterResolve = 9,
+    /// The contract is administratively paused. `mint`, `burn`, and `transfer`
+    /// are all rejected until the admin calls `unpause`.
+    ContractPaused = 10,
+    /// The pending market-contract rotation has no change to cancel.
+    NoPendingMarketContractChange = 11,
+    /// The market-contract rotation timelock has not yet elapsed.
+    TimelockNotElapsed = 12,
 }

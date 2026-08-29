@@ -351,3 +351,132 @@ fn non_admin_cannot_update_market_contract() {
         Err(Ok(ContractError::Unauthorized))
     );
 }
+
+// ── pause / unpause ─────────────────────────────────────────────────────────
+
+#[test]
+fn is_paused_returns_false_by_default() {
+    let env = Env::default();
+    let (client, _admin, _market) = setup(&env);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn admin_can_pause_and_unpause() {
+    let env = Env::default();
+    let (client, admin, _market) = setup(&env);
+
+    client.pause(&admin);
+    assert!(client.is_paused());
+
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn non_admin_cannot_pause() {
+    let env = Env::default();
+    let (client, _admin, _market) = setup(&env);
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_pause(&stranger),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn non_admin_cannot_unpause() {
+    let env = Env::default();
+    let (client, admin, _market) = setup(&env);
+    client.pause(&admin);
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_unpause(&stranger),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn mint_blocked_when_paused() {
+    let env = Env::default();
+    let (client, admin, _market) = setup(&env);
+    let user = Address::generate(&env);
+
+    client.pause(&admin);
+    assert_eq!(
+        client.try_mint(&1, &user, &TokenKind::Yes, &100),
+        Err(Ok(ContractError::ContractPaused))
+    );
+}
+
+#[test]
+fn burn_blocked_when_paused() {
+    let env = Env::default();
+    let (client, admin, _market) = setup(&env);
+    let user = Address::generate(&env);
+
+    // Mint first while unpaused
+    client.mint(&1, &user, &TokenKind::Yes, &500);
+
+    client.pause(&admin);
+    assert_eq!(
+        client.try_burn(&1, &user, &TokenKind::Yes, &100),
+        Err(Ok(ContractError::ContractPaused))
+    );
+}
+
+#[test]
+fn mint_and_burn_work_after_unpause() {
+    let env = Env::default();
+    let (client, admin, _market) = setup(&env);
+    let user = Address::generate(&env);
+
+    client.pause(&admin);
+    client.unpause(&admin);
+
+    client.mint(&1, &user, &TokenKind::Yes, &200);
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 200);
+
+    client.burn(&1, &user, &TokenKind::Yes, &100);
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 100);
+}
+
+#[test]
+fn pause_blocks_mint_burn_transfer() {
+    let env = Env::default();
+    let (client, admin, _market) = setup(&env);
+    let user = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    // Mint some tokens while not yet paused
+    client.mint(&1, &user, &TokenKind::Yes, &1000);
+
+    // Pause the contract
+    client.pause(&admin);
+    assert!(client.is_paused());
+
+    // All three mutation entrypoints must be blocked
+    assert_eq!(
+        client.try_mint(&1, &user, &TokenKind::Yes, &100),
+        Err(Ok(ContractError::ContractPaused))
+    );
+    assert_eq!(
+        client.try_burn(&1, &user, &TokenKind::Yes, &100),
+        Err(Ok(ContractError::ContractPaused))
+    );
+    // transfer also checks pause before the cross-contract market-status call
+    assert_eq!(
+        client.try_transfer(&1, &user, &other, &TokenKind::Yes, &100),
+        Err(Ok(ContractError::ContractPaused))
+    );
+
+    // Unpause and confirm mint/burn are restored
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+
+    client.mint(&1, &user, &TokenKind::Yes, &50);
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 1050);
+
+    client.burn(&1, &user, &TokenKind::Yes, &50);
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 1000);
+}

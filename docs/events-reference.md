@@ -94,6 +94,8 @@ events additionally carry a `version: u32 (topic)` field
 | `token_minted` | `market_id: u32 (topic)`, `user: Address (topic)`, `kind: TokenKind`, `amount: i128`, `new_balance: i128` | Outcome tokens (YES/NO) are minted to a user |
 | `token_burned` | `market_id: u32 (topic)`, `user: Address (topic)`, `kind: TokenKind`, `amount: i128`, `new_balance: i128` | Outcome tokens are burned from a user |
 | `token_transferred` | `market_id: u32 (topic)`, `from: Address (topic)`, `to: Address`, `kind: TokenKind`, `amount: i128` | Outcome tokens are transferred between two users |
+| `contract_paused` | `admin: Address (topic)`, `paused_at: u64` | Contract administratively paused; `mint`, `burn`, `transfer` now return `ContractPaused` (#750) |
+| `contract_unpaused` | `admin: Address (topic)`, `unpaused_at: u64` | Contract unpaused; normal token operations restored (#750) |
 
 ## Notes for indexers
 
