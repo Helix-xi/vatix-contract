@@ -1434,7 +1434,7 @@ mod tests {
         let end_time = 1234567890u64;
 
         env.as_contract(&contract_id, || {
-            emit_market_created(&env, market_id, &creator, &question, end_time);
+            emit_market_created(&env, market_id, &creator, &question, end_time, &None);
         });
 
         // Verify event was published
@@ -1920,5 +1920,51 @@ mod tests {
             .into_val(&env);
         assert_eq!(fee_val, fee_amount);
         assert_eq!(available_val, available_after_fee);
+    }
+
+    /// #710: `market_closed_to_deposits` must expose the canonical topic set
+    /// off-chain indexer mappings key on — `[event_name, version, market_id]`
+    /// — with `admin` and `closed_at` in the data payload. Locks the wire
+    /// shape so an indexer mapping written against it cannot silently break.
+    #[test]
+    fn test_emit_market_closed_to_deposits() {
+        let env = Env::default();
+        let contract_id = env.register(MarketContract, ());
+
+        let market_id = 42u32;
+        let admin = Address::generate(&env);
+        let closed_at = 1_700_000_123u64;
+
+        env.as_contract(&contract_id, || {
+            emit_market_closed_to_deposits(&env, market_id, &admin, closed_at);
+        });
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+
+        let event = events.first().unwrap();
+        let topics = &event.1;
+        assert_eq!(topics.len(), 3);
+
+        let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
+        assert_eq!(topic0, Symbol::new(&env, "market_closed_to_deposits"));
+
+        let topic1: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
+
+        let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
+        let admin_val: Address = data
+            .get(Symbol::new(&env, "admin"))
+            .unwrap()
+            .into_val(&env);
+        let closed_at_val: u64 = data
+            .get(Symbol::new(&env, "closed_at"))
+            .unwrap()
+            .into_val(&env);
+        assert_eq!(admin_val, admin);
+        assert_eq!(closed_at_val, closed_at);
     }
 }

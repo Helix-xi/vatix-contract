@@ -21,7 +21,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | Entrypoint                     | require_auth | admin-equality check | Notes |
 |---------------------------------|:---:|:---:|-------|
 | `initialize`                   | ✅ | n/a (bootstraps admin) | Guarded by `AlreadyInitialized` instead. As of #701, also defaults legacy V1 oracle signatures (`OracleV1Disabled`) to disabled — a fresh deployment fails closed until the admin explicitly re-enables V1 via `set_oracle_v1_disabled`. |
-| `propose_admin`                 | — | ✅ (`storage::get_admin`) | Auth deferred to `accept_admin`. |
+| `propose_admin`                 | ✅ (`current_admin`) | ✅ (`storage::get_admin`) | Current admin must authorize the nomination; nominee is also validated to be an account, not a contract (`validate_admin_address`). The transfer still only completes on `accept_admin`. |
 | `accept_admin`                  | ✅ | ✅ (must match `PendingAdmin`) | Two-step transfer. |
 | `cancel_admin_transfer`          | ✅ | ✅ | Cancels a pending `propose_admin`. |
 | `initialize_market`             | ✅ | ✅ | |

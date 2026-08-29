@@ -1657,6 +1657,95 @@ mod test {
         });
     }
 
+    /// #705: proposing a new admin must NOT move the admin role. Only
+    /// `accept_admin`, called by the nominee, completes the transfer. A
+    /// single-step design (or docs/tests implying one) would hand control to
+    /// the nominee — or strand it — the instant `propose_admin` runs.
+    #[test]
+    fn test_propose_admin_alone_does_not_change_current_admin() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&admin, &new_admin);
+
+        // Stored admin is still the original.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                storage::get_admin(&env).unwrap(),
+                admin,
+                "current admin must be unchanged until the nominee calls accept_admin"
+            );
+        });
+
+        let question = String::from_str(&env, "still admin?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let oracle_pubkey = BytesN::from_array(&env, &[9u8; 32]);
+        let collateral_token = Address::generate(&env);
+
+        // The original admin still holds admin powers.
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+        assert_eq!(market_id, 1);
+
+        // The pending nominee has no admin powers yet.
+        let res = client.try_initialize_market(
+            &new_admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+        assert!(
+            res.is_err(),
+            "pending admin must not have admin powers before acceptance"
+        );
+
+        // After acceptance the role finally moves.
+        client.accept_admin(&new_admin);
+        env.as_contract(&contract_id, || {
+            assert_eq!(storage::get_admin(&env).unwrap(), new_admin);
+        });
+    }
+
+    /// #705 / audit readiness: `propose_admin` must require the current
+    /// admin's authorization. Previously it did not — `current_admin` is a
+    /// plain parameter, so anyone could pass the real admin's address,
+    /// nominate themselves, then self-`accept_admin` (which only checks the
+    /// *new* admin's signature) to seize the contract.
+    #[test]
+    fn test_propose_admin_requires_current_admin_auth() {
+        let env = Env::default();
+        // NOTE: deliberately no env.mock_all_auths().
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_admin(&env, &admin);
+            storage::set_version(&env);
+        });
+
+        let attacker = Address::generate(&env);
+        let res = client.try_propose_admin(&admin, &attacker);
+        assert!(
+            res.is_err(),
+            "propose_admin must fail when the current admin has not authorized the call"
+        );
+
+        env.as_contract(&contract_id, || {
+            assert!(
+                storage::get_pending_admin(&env).is_none(),
+                "no nomination may be recorded without the current admin's auth"
+            );
+        });
+    }
+
     #[test]
     fn test_propose_admin_emits_event() {
         let (env, admin, client, _contract_id) = create_test_contract();
