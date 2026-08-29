@@ -21,4 +21,14 @@ pub enum ContractError {
     /// `mint`/`burn`/`transfer` against a stale on-chain layout after a
     /// partial cross-contract upgrade instead of silently corrupting balances.
     UpgradeRequired = 8,
+    /// `execute_market_contract` was called but no pending rotation exists.
+    NoPendingMarketContractChange = 9,
+    /// The timelock delay for a pending `market_contract` rotation has not
+    /// elapsed yet.
+    TimelockNotElapsed = 10,
+    /// A peer-to-peer `transfer` was attempted after the market resolved.
+    /// Post-resolution transfers are blocked because settlement pays out
+    /// against the original depositor's position record, not the current
+    /// token holder (Issue #690).
+    TransferBlockedAfterResolve = 11,
 }
