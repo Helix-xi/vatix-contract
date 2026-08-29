@@ -37,6 +37,10 @@ pub enum StorageKey {
     PendingFactory,
     /// Pending market contract address awaiting its timelock delay.
     PendingMarketContract,
+    /// Pending treasury address awaiting its timelock delay (Issue #687).
+    PendingTreasury,
+    /// Mirrored emergency mode (Issue #662).
+    EmergencyMode,
 }
 
 // ── Version ───────────────────────────────────────────────────────────────
@@ -178,6 +182,29 @@ pub fn get_treasury(env: &Env) -> Option<Address> {
 
 pub fn set_treasury(env: &Env, treasury: &Address) {
     env.storage().persistent().set(&StorageKey::Treasury, treasury);
+}
+
+pub fn get_pending_treasury(env: &Env) -> Option<crate::types::PendingAddressChange> {
+    env.storage().persistent().get(&StorageKey::PendingTreasury)
+}
+
+pub fn set_pending_treasury(env: &Env, pending: &crate::types::PendingAddressChange) {
+    env.storage().persistent().set(&StorageKey::PendingTreasury, pending);
+}
+
+pub fn clear_pending_treasury(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingTreasury);
+}
+
+pub fn get_emergency_mode(env: &Env) -> crate::types::EmergencyMode {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmergencyMode)
+        .unwrap_or(crate::types::EmergencyMode::Normal)
+}
+
+pub fn set_emergency_mode(env: &Env, mode: &crate::types::EmergencyMode) {
+    env.storage().persistent().set(&StorageKey::EmergencyMode, mode);
 }
 
 #[cfg(test)]
