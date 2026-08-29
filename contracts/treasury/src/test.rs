@@ -495,6 +495,90 @@ fn multiple_markets_can_each_collect_fees() {
     assert_eq!(s.client.get_cumulative_fees(&s.token), 300);
 }
 
+// ── propose_market_contract / execute_market_contract (timelocked, #720) ──────
+
+#[test]
+fn execute_market_contract_preserves_previously_added_markets() {
+    // Regression for #720: `execute_market_contract` used to overwrite the
+    // whole `AuthorizedMarkets` registry with a single-element vec, silently
+    // deregistering every market added via `add_market`. It must now append,
+    // just like `add_market` does, so the two entrypoints agree on one
+    // registry instead of drifting apart.
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    let market3 = Address::generate(&s.env);
+    s.client.add_market(&s.admin, &market2);
+
+    s.client.propose_market_contract(&s.admin, &market3);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_market_contract();
+
+    assert!(s.client.is_authorized_market(&s.market));
+    assert!(s.client.is_authorized_market(&market2));
+    assert!(s.client.is_authorized_market(&market3));
+    assert_eq!(s.client.list_markets().len(), 3);
+
+    // The originally-registered market must still be able to collect fees —
+    // this is the concrete symptom the drift caused: a live market silently
+    // losing `collect_fee` access with no `remove_market` call or event.
+    s.client.collect_fee(&s.market, &s.token, &1u32, &1_000i128);
+    assert_eq!(s.client.token_balance(&s.token), 1_000i128);
+}
+
+#[test]
+fn execute_market_contract_is_idempotent_for_already_authorized_market() {
+    let s = setup();
+    s.client.propose_market_contract(&s.admin, &s.market);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_market_contract();
+
+    assert_eq!(s.client.list_markets().len(), 1);
+    assert!(s.client.is_authorized_market(&s.market));
+}
+
+#[test]
+fn execute_market_contract_rejects_before_timelock_elapses() {
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    s.client.propose_market_contract(&s.admin, &market2);
+
+    let err = s.client.try_execute_market_contract().unwrap_err().unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert!(!s.client.is_authorized_market(&market2));
+}
+
+#[test]
+fn propose_market_contract_rejects_non_admin() {
+    let s = setup();
+    let rando = Address::generate(&s.env);
+    let market2 = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_propose_market_contract(&rando, &market2)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+}
+
+#[test]
+fn cancel_market_contract_clears_pending_change() {
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    s.client.propose_market_contract(&s.admin, &market2);
+    s.client.cancel_market_contract(&s.admin);
+
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    let err = s.client.try_execute_market_contract().unwrap_err().unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert!(!s.client.is_authorized_market(&market2));
+}
+
 // ── propose_admin / execute_admin (timelocked, #658) ───────────────────────────
 
 #[test]

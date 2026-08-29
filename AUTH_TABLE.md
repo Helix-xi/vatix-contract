@@ -62,7 +62,7 @@ are out of scope for this table.
 | `propose_admin` / `execute_admin` / `cancel_admin` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | 48h timelock (`ADDRESS_TIMELOCK_SECONDS`) admin rotation. |
 | `add_market`           | ✅ | ✅ | |
 | `remove_market`        | ✅ | ✅ | |
-| `propose_market_contract` / `execute_market_contract` / `cancel_market_contract` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked market-contract rotation. |
+| `propose_market_contract` / `execute_market_contract` / `cancel_market_contract` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked market-contract rotation. **Fixed by #720**: `execute_market_contract` used to overwrite the entire `AuthorizedMarkets` registry with a single-element vec, silently deregistering every market previously added via `add_market` (no `market_removed` event, no error) — registry drift between the two entrypoints that both mutate `AuthorizedMarkets`. It now appends idempotently, matching `add_market`. |
 | `pause` / `unpause`    | ✅ | ✅ | |
 | `set_emergency_mode`   | ✅ | ✅ | Mirrors the Market/Resolution coordinated mode (#662). |
 | `set_stakeholders`     | ✅ | ✅ | Share weights must sum to exactly 10,000 bps. |
