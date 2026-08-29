@@ -9,7 +9,7 @@
 
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
@@ -53,11 +53,19 @@ fn fund_and_collect(s: &Setup, amount: i128) {
     s.client.collect_fee(&s.market, &s.token, &1u32, &amount);
 }
 
+fn propose_and_execute_stakeholders(s: &Setup, stakeholders: &soroban_sdk::Vec<(Address, u32)>) {
+    s.client.propose_stakeholders(&s.admin, stakeholders);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_stakeholders();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     /// Invariant: for a 3-way stakeholder split (shares summing to exactly
-    /// `BPS_DENOMINATOR`, matching `set_stakeholders`' validation) and any
+    /// `BPS_DENOMINATOR`, matching `propose_stakeholders`' validation) and any
     /// realistic fee balance, the sum of every stakeholder payout plus the
     /// remaining treasury balance equals the pre-distribution balance
     /// exactly — no value is created or silently dropped.
@@ -68,7 +76,7 @@ proptest! {
         share_b_raw in 1u32..=9_998u32,
     ) {
         // Derive three non-zero shares that sum to exactly BPS_DENOMINATOR
-        // (the same invariant `set_stakeholders` enforces).
+        // (the same invariant `propose_stakeholders` enforces).
         let remaining_after_a = BPS_DENOMINATOR - share_a;
         prop_assume!(remaining_after_a >= 2);
         let share_b = 1 + (share_b_raw % (remaining_after_a - 1));
@@ -85,7 +93,7 @@ proptest! {
         stakeholders.push_back((stakeholder_a.clone(), share_a));
         stakeholders.push_back((stakeholder_b.clone(), share_b));
         stakeholders.push_back((stakeholder_c.clone(), share_c));
-        s.client.set_stakeholders(&s.admin, &stakeholders);
+        propose_and_execute_stakeholders(&s, &stakeholders);
 
         s.client.distribute_fees(&s.admin, &s.token);
 
@@ -134,7 +142,7 @@ proptest! {
         let mut stakeholders = soroban_sdk::Vec::new(&s.env);
         stakeholders.push_back((stakeholder_a.clone(), share_a));
         stakeholders.push_back((stakeholder_b.clone(), share_b));
-        s.client.set_stakeholders(&s.admin, &stakeholders);
+        propose_and_execute_stakeholders(&s, &stakeholders);
 
         s.client.distribute_fees(&s.admin, &s.token);
 
@@ -160,7 +168,7 @@ proptest! {
         let stakeholder = Address::generate(&s.env);
         let mut stakeholders = soroban_sdk::Vec::new(&s.env);
         stakeholders.push_back((stakeholder.clone(), BPS_DENOMINATOR));
-        s.client.set_stakeholders(&s.admin, &stakeholders);
+        propose_and_execute_stakeholders(&s, &stakeholders);
 
         s.client.distribute_fees(&s.admin, &s.token);
 

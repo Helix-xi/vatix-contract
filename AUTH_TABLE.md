@@ -65,8 +65,8 @@ are out of scope for this table.
 | `propose_market_contract` / `execute_market_contract` / `cancel_market_contract` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked market-contract rotation. **Fixed by #720**: `execute_market_contract` used to overwrite the entire `AuthorizedMarkets` registry with a single-element vec, silently deregistering every market previously added via `add_market` (no `market_removed` event, no error) — registry drift between the two entrypoints that both mutate `AuthorizedMarkets`. It now appends idempotently, matching `add_market`. |
 | `pause` / `unpause`    | ✅ | ✅ | |
 | `set_emergency_mode`   | ✅ | ✅ | Mirrors the Market/Resolution coordinated mode (#662). |
-| `set_stakeholders`     | ✅ | ✅ | Share weights must sum to exactly 10,000 bps. |
-| `distribute_fees`      | ✅ | ✅ | |
+| `propose_stakeholders` / `execute_stakeholders` / `cancel_stakeholders` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked (#689) stakeholder revenue-share list. `propose_stakeholders` rejects an empty list or shares not summing to exactly 10,000 bps with `InvalidStakeholderWeights` (#721). Table entry was still named `set_stakeholders` (its pre-#689 name) until this pass — kept in sync now. |
+| `distribute_fees`      | ✅ | ✅ | Rejects with `NoStakeholdersConfigured` if `propose_stakeholders`/`execute_stakeholders` has never installed a list. **Fixed by #721**: the payout loop pushed each stakeholder's transfer onto the payout list twice, so every stakeholder was paid double the intended amount while the treasury's own ledger (`distributed`/`remaining`) only accounted for a single payment — found via the `test.rs`/`distribute_proptest.rs` fallout from the `set_stakeholders` → `propose_stakeholders` rename (#689), which had left those test files referencing a removed client method and unable to compile at all, masking the bug. |
 
 `collect_fee` requires auth from `caller` but intentionally checks
 *registered-market* membership (`is_authorized_market`) rather than admin

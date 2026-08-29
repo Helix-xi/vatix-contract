@@ -20,13 +20,13 @@
 | Key | Storage tier | Value type | Description |
 |-----|-------------|-----------|-------------|
 | `StorageVersion` | `instance` | `u32` | Written by `initialize`; guards against stale or uninitialized deployments. Every accessor calls `assert_version` before reading data. |
-| `Admin` | `instance` | `Address` | The address that may call `withdraw_fees` and other admin-only operations. Set once at initialization; transferable via `transfer_admin`. |
+| `Admin` | `instance` | `Address` | The address that may call `withdraw_fees` and other admin-only operations. Set once at initialization; transferable via the timelocked `propose_admin` / `execute_admin` / `cancel_admin` (#658). |
 | `AuthorizedMarkets` | `instance` | `Vec<Address>` | The set of market contract addresses allowed to call `collect_fee`. Managed via `add_market` / `remove_market`. Returns an empty list when unset (not an error). |
 | `TokenBalance(Address)` | `persistent` | `i128` | Current custodied balance for a specific collateral token. Increases on `collect_fee`, decreases on `withdraw_fees` / `distribute_fees`. Key parameter: token mint address. |
 | `CumulativeFees(Address)` | `persistent` | `i128` | Monotonically increasing historical total of all fees ever collected for a token. Never decreases — useful for off-chain accounting and audit trails. Key parameter: token mint address. |
 | `TotalCollected` | `instance` | `i128` | Global monotone counter: sum of all fees ever collected across every token. Never decreases. |
 | `Paused` | `instance` | `bool` | When `true`, `collect_fee` and `withdraw_fees` are blocked until an admin calls `unpause`. Defaults to `false` when unset. |
-| `Stakeholders` | `instance` | `Vec<(Address, u32)>` | Ordered list of `(stakeholder_address, share_bps)` pairs used by `distribute_fees` (#485). All `share_bps` values must sum to exactly `10_000`. Empty list when `set_stakeholders` has never been called. |
+| `Stakeholders` | `instance` | `Vec<(Address, u32)>` | Ordered list of `(stakeholder_address, share_bps)` pairs used by `distribute_fees` (#485). All `share_bps` values must sum to exactly `10_000`; an empty or non-summing list is rejected at `propose_stakeholders` time with `InvalidStakeholderWeights` (#721). Set via the timelocked `propose_stakeholders` / `execute_stakeholders` / `cancel_stakeholders` (#689). Empty list when no stakeholder change has ever executed — `distribute_fees` rejects with `NoStakeholdersConfigured` in that case. |
 | `FeeTokens` | `instance` | `Vec<Address>` | Registry of every distinct token mint that has ever had a fee routed through `collect_fee` (#484). Lets callers enumerate which tokens hold a balance without prior knowledge of token addresses. Append-only and idempotent — re-registering an already-known token is a no-op. |
 
 ---
