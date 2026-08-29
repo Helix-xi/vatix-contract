@@ -141,6 +141,40 @@ impl ResolutionContract {
         storage::get_config(&env).challenge_window_secs
     }
 
+    /// Update the contract-wide *default* challenge window (#723).
+    ///
+    /// # Why this is not timelocked
+    ///
+    /// Every other privileged address/config mutator in this codebase that
+    /// takes effect immediately for *existing* on-chain state goes through a
+    /// propose/execute timelock (`ADDRESS_TIMELOCK_SECONDS`, 48h) — see
+    /// `propose_factory`/`propose_market_contract` in this file. This setter
+    /// is deliberately the exception, because `challenge_window_secs` has no
+    /// binding effect on any candidate, past or present:
+    ///
+    /// - [`Self::propose`], [`Self::propose_v2`], and [`Self::appeal`] each
+    ///   take their own `challenge_window_seconds` argument, independently
+    ///   bounded by [`validate_challenge_window`] against the fixed
+    ///   `MIN_CHALLENGE_WINDOW_SECONDS`/`MAX_CHALLENGE_WINDOW_SECONDS`
+    ///   constants — never read from `config.challenge_window_secs`.
+    /// - A candidate's `challenge_deadline` is computed once, at proposal
+    ///   time, from that caller-supplied argument, and stored immutably on
+    ///   the `ResolutionCandidate`. Changing the default afterwards cannot
+    ///   move it.
+    /// - A malicious admin shrinking the default to `MIN_CHALLENGE_WINDOW_SECONDS`
+    ///   (60s) grants no capability an attacker didn't already have: any
+    ///   proposer can already choose a 60s window on their own initiative,
+    ///   with or without the admin's help, since `propose`/`propose_v2`
+    ///   never require the caller to use the default.
+    ///
+    /// In short: this value is advisory metadata for off-chain callers
+    /// deciding what window to *pass*, not an on-chain enforcement
+    /// parameter — so instant, non-timelocked updates carry none of the
+    /// "instant window shrink can brick challenges" risk the timelock
+    /// pattern exists to prevent elsewhere. See
+    /// `shrinking_default_does_not_move_existing_candidate_deadline` and
+    /// `shrinking_default_does_not_constrain_a_new_proposals_chosen_window`
+    /// in `test.rs` for the regression coverage proving both halves of this.
     pub fn set_default_challenge_window(
         env: Env,
         admin: Address,
