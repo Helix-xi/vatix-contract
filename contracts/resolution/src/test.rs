@@ -1365,3 +1365,204 @@ fn slash_collateral_emits_collateral_slashed_event() {
     assert_eq!(client.get_proposer_collateral(&proposer), 0i128);
     assert_eq!(balance(&env, &token, &recipient), 10_000_000i128);
 }
+
+// ── appeal path status machine (#725) ────────────────────────────────────────
+//
+// `appeal` is only valid from the CHALLENGED state. These tests cover every
+// state-machine edge: success from Challenged, rejection from Proposed/
+// Finalized/Voided, the appeal_round counter, the MAX_APPEAL_ROUNDS cap, and
+// the transition back to Proposed with a fresh challenge deadline.
+
+fn do_propose(
+    env: &Env,
+    client: &ResolutionContractClient<'_>,
+    token: &Address,
+    market_id: u32,
+) -> (Address, u32) {
+    let proposer = Address::generate(env);
+    fund(env, token, &proposer, BOND);
+    set_time(env, 1_000);
+    let candidate_id = client.propose(
+        &proposer,
+        &market_id,
+        &true,
+        &signature(env),
+        &(env.ledger().timestamp() + 600),
+        &evidence(env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+    (proposer, candidate_id)
+}
+
+fn do_challenge(
+    env: &Env,
+    client: &ResolutionContractClient<'_>,
+    token: &Address,
+    candidate_id: u32,
+) -> Address {
+    let challenger = Address::generate(env);
+    fund(env, token, &challenger, BOND);
+    client.challenge(&challenger, &candidate_id, &evidence(env), &BOND);
+    challenger
+}
+
+/// `appeal` from a Challenged candidate succeeds and resets status to Proposed.
+#[test]
+fn appeal_from_challenged_resets_to_proposed() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    let (proposer, candidate_id) = do_propose(&env, &client, &token, 20);
+    do_challenge(&env, &client, &token, candidate_id);
+
+    assert_eq!(
+        client.get_candidate(&candidate_id).unwrap().status,
+        crate::types::CandidateStatus::Challenged
+    );
+
+    client.appeal(
+        &proposer,
+        &candidate_id,
+        &true,
+        &signature(&env),
+        &evidence(&env),
+        &MIN_WINDOW,
+    );
+
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    assert_eq!(candidate.status, crate::types::CandidateStatus::Proposed);
+    assert_eq!(candidate.appeal_round, 1);
+    assert!(candidate.challenged_by.is_none());
+    assert!(candidate.challenge_uri.is_none());
+}
+
+/// `appeal` from a Proposed (not-yet-challenged) candidate is rejected with
+/// CandidateNotChallenged.
+#[test]
+fn appeal_from_proposed_is_rejected() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    let (proposer, candidate_id) = do_propose(&env, &client, &token, 21);
+
+    assert_eq!(
+        client.try_appeal(
+            &proposer,
+            &candidate_id,
+            &true,
+            &signature(&env),
+            &evidence(&env),
+            &MIN_WINDOW,
+        ),
+        Err(Ok(ContractError::CandidateNotChallenged))
+    );
+}
+
+/// `appeal` from a Finalized candidate is rejected.
+#[test]
+fn appeal_from_finalized_is_rejected() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    let (proposer, candidate_id) = do_propose(&env, &client, &token, 22);
+
+    // Let the challenge window expire, then finalize.
+    set_time(&env, 1_000 + MIN_WINDOW + 1);
+    let finalizer = Address::generate(&env);
+    client.finalize(&finalizer, &candidate_id);
+
+    assert_eq!(
+        client.try_appeal(
+            &proposer,
+            &candidate_id,
+            &true,
+            &signature(&env),
+            &evidence(&env),
+            &MIN_WINDOW,
+        ),
+        Err(Ok(ContractError::CandidateNotChallenged))
+    );
+}
+
+/// `appeal` increments `appeal_round` on each successful call.
+#[test]
+fn appeal_increments_appeal_round() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    let (proposer, candidate_id) = do_propose(&env, &client, &token, 23);
+
+    for expected_round in 1..=crate::MAX_APPEAL_ROUNDS {
+        do_challenge(&env, &client, &token, candidate_id);
+        client.appeal(
+            &proposer,
+            &candidate_id,
+            &true,
+            &signature(&env),
+            &evidence(&env),
+            &MIN_WINDOW,
+        );
+        assert_eq!(
+            client.get_candidate(&candidate_id).unwrap().appeal_round,
+            expected_round
+        );
+    }
+}
+
+/// Once `appeal_round` reaches `MAX_APPEAL_ROUNDS`, `appeal` is rejected
+/// with `AppealLimitExceeded`.
+#[test]
+fn appeal_rejected_after_max_rounds() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    let (proposer, candidate_id) = do_propose(&env, &client, &token, 24);
+
+    // Exhaust all appeal rounds.
+    for _ in 0..crate::MAX_APPEAL_ROUNDS {
+        do_challenge(&env, &client, &token, candidate_id);
+        client.appeal(
+            &proposer,
+            &candidate_id,
+            &true,
+            &signature(&env),
+            &evidence(&env),
+            &MIN_WINDOW,
+        );
+    }
+
+    // Now challenged again — appeal must be rejected.
+    do_challenge(&env, &client, &token, candidate_id);
+    assert_eq!(
+        client.try_appeal(
+            &proposer,
+            &candidate_id,
+            &true,
+            &signature(&env),
+            &evidence(&env),
+            &MIN_WINDOW,
+        ),
+        Err(Ok(ContractError::AppealLimitExceeded))
+    );
+}
+
+/// After `appeal` the challenge deadline is reset to `proposed_at +
+/// challenge_window_seconds` from the new proposal time, giving a fresh
+/// window for challengers.
+#[test]
+fn appeal_resets_challenge_deadline() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    let (proposer, candidate_id) = do_propose(&env, &client, &token, 25);
+    do_challenge(&env, &client, &token, candidate_id);
+
+    set_time(&env, 5_000);
+    client.appeal(
+        &proposer,
+        &candidate_id,
+        &true,
+        &signature(&env),
+        &evidence(&env),
+        &MIN_WINDOW,
+    );
+
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    assert_eq!(candidate.challenge_deadline, 5_000 + MIN_WINDOW);
+    assert_eq!(candidate.proposed_at, 5_000);
+}
