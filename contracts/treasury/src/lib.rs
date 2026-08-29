@@ -365,8 +365,19 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let markets = soroban_sdk::vec![&env, pending.new_address.clone()];
-        storage::set_authorized_markets(&env, &markets);
+        // Append rather than replace (#720): this entrypoint and
+        // `add_market`/`remove_market` both mutate the single
+        // `AuthorizedMarkets` registry. Overwriting it with a fresh
+        // single-element vec here used to silently deregister every other
+        // market added via `add_market` — including markets still live and
+        // routing fees through this treasury — with no `market_removed`
+        // event to signal the drop. Matching `add_market`'s idempotent
+        // append keeps the two entrypoints consistent with one registry.
+        let mut markets = storage::get_authorized_markets(&env);
+        if !markets.contains(&pending.new_address) {
+            markets.push_back(pending.new_address.clone());
+            storage::set_authorized_markets(&env, &markets);
+        }
         storage::clear_pending_market_contract(&env);
 
         events::emit_market_contract_set(&env, &pending.new_address);
