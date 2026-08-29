@@ -651,6 +651,96 @@ fn unpause_rejects_non_admin() {
     assert_eq!(err, TreasuryError::Unauthorized);
 }
 
+// ── Emergency mode (#662, #722) ─────────────────────────────────────────────
+//
+// Regression for #722: `StorageKey::EmergencyMode` was referenced by
+// `get_emergency_mode`/`set_emergency_mode` but was never added as a variant
+// of the `StorageKey` enum, so the treasury crate has not compiled at all
+// since the emergency-mode feature was introduced (#662) -- these are the
+// first tests to exercise this path.
+
+#[test]
+fn emergency_mode_defaults_to_normal() {
+    let s = setup();
+    assert_eq!(s.client.get_emergency_mode(), storage::EmergencyMode::Normal);
+}
+
+#[test]
+fn set_emergency_mode_updates_stored_mode() {
+    let s = setup();
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::GlobalFreeze);
+    assert_eq!(s.client.get_emergency_mode(), storage::EmergencyMode::GlobalFreeze);
+}
+
+#[test]
+fn set_emergency_mode_rejects_non_admin() {
+    let s = setup();
+    let rando = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_set_emergency_mode(&rando, &storage::EmergencyMode::GlobalFreeze)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert_eq!(s.client.get_emergency_mode(), storage::EmergencyMode::Normal);
+}
+
+#[test]
+fn global_freeze_blocks_collect_fee_withdraw_and_distribute() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+
+    let stakeholder = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder, 10_000u32));
+    s.client.propose_stakeholders(&s.admin, &stakeholders);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_stakeholders();
+
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::GlobalFreeze);
+
+    let err = s
+        .client
+        .try_collect_fee(&s.market, &s.token, &2u32, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::EmergencyModeActive);
+
+    let recipient = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_withdraw_fees(&s.admin, &s.token, &recipient, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::EmergencyModeActive);
+
+    let err = s
+        .client
+        .try_distribute_fees(&s.admin, &s.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::EmergencyModeActive);
+}
+
+#[test]
+fn trading_halted_and_settle_only_still_allow_collect_fee() {
+    // Per the documented mode table, TradingHalted and SettleOnly only block
+    // GlobalFreeze-gated calls elsewhere (Market contract) -- on Treasury,
+    // collect_fee/withdraw_fees/distribute_fees are only blocked by
+    // GlobalFreeze.
+    let s = setup();
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::TradingHalted);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &100i128);
+    assert_eq!(s.client.token_balance(&s.token), 100);
+
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::SettleOnly);
+    s.client.collect_fee(&s.market, &s.token, &2u32, &100i128);
+    assert_eq!(s.client.token_balance(&s.token), 200);
+}
+
 // ── #593: collect_fee pause gate ─────────────────────────────────────────────
 
 /// `collect_fee` must be blocked while the treasury is paused and must return
