@@ -1,8 +1,8 @@
 use crate::{ContractError, ResolutionContract, ResolutionContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, IntoVal, Map, String, Symbol, TryIntoVal, Val,
 };
 
 /// A minimal stand-in for the market contract's dispute-facing surface
@@ -1364,4 +1364,184 @@ fn slash_collateral_emits_collateral_slashed_event() {
     // State must be correct: balance zeroed, funds at recipient.
     assert_eq!(client.get_proposer_collateral(&proposer), 0i128);
     assert_eq!(balance(&env, &token, &recipient), 10_000_000i128);
+}
+
+// ── Candidate event snapshot tests (#727) ────────────────────────────────────
+//
+// Each test triggers exactly one lifecycle event and asserts the complete
+// shape: topic count, topic values (field order matters for indexers), and
+// every data field. Failures here indicate a breaking change to the event
+// schema that would break off-chain indexers.
+
+/// Extract the last emitted event as (topics: Vec<Val>, data: Val).
+/// Find the first event whose first topic matches `name`, scanning from newest.
+fn find_event(env: &Env, name: &str) -> (soroban_sdk::Vec<Val>, Val) {
+    let target = Symbol::new(env, name);
+    let all = env.events().all();
+    for ev in all.iter().rev() {
+        if let Some(first) = ev.1.get(0) {
+            let sym: Option<Symbol> = first.into_val(env);
+            if sym.map(|s| s == target).unwrap_or(false) {
+                return (ev.1, ev.2);
+            }
+        }
+    }
+    panic!("event '{}' not found", name);
+}
+
+fn topic_sym(env: &Env, topics: &soroban_sdk::Vec<Val>, idx: u32) -> Symbol {
+    topics.get(idx).unwrap().into_val(env)
+}
+
+fn data_map(env: &Env, data: Val) -> Map<Symbol, Val> {
+    data.try_into_val(env).expect("event data must be a Map<Symbol,Val>")
+}
+
+fn ev_u64(env: &Env, m: &Map<Symbol, Val>, key: &str) -> u64 {
+    m.get(Symbol::new(env, key)).unwrap().into_val(env)
+}
+
+fn ev_i128(env: &Env, m: &Map<Symbol, Val>, key: &str) -> i128 {
+    m.get(Symbol::new(env, key)).unwrap().into_val(env)
+}
+
+fn ev_bool(env: &Env, m: &Map<Symbol, Val>, key: &str) -> bool {
+    m.get(Symbol::new(env, key)).unwrap().into_val(env)
+}
+
+fn ev_addr(env: &Env, m: &Map<Symbol, Val>, key: &str) -> Address {
+    m.get(Symbol::new(env, key)).unwrap().into_val(env)
+}
+
+/// `CandidateProposed` event: topics=[candidate_proposed, candidate_id,
+/// market_id] and data={outcome, proposer, evidence_uri, challenge_deadline,
+/// signature_expiry, bond_amount}.
+#[test]
+fn event_candidate_proposed_shape() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let expiry = env.ledger().timestamp() + 600;
+    let candidate_id = client.propose(
+        &proposer,
+        &42u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+
+    let (topics, data) = find_event(&env, "candidate_proposed");
+
+    // Topic 0: event name
+    assert_eq!(
+        topic_sym(&env, &topics, 0u32),
+        Symbol::new(&env, "candidate_proposed")
+    );
+    // Topic 1: candidate_id
+    let topic_cid: u32 = topics.get(1).unwrap().into_val(&env);
+    assert_eq!(topic_cid, candidate_id);
+    // Topic 2: market_id
+    let topic_mid: u32 = topics.get(2).unwrap().into_val(&env);
+    assert_eq!(topic_mid, 42u32);
+
+    let m = data_map(&env, data);
+    assert_eq!(ev_bool(&env, &m, "outcome"), true);
+    assert_eq!(ev_addr(&env, &m, "proposer"), proposer);
+    assert_eq!(ev_u64(&env, &m, "challenge_deadline"), 1_000 + MIN_WINDOW);
+    assert_eq!(ev_u64(&env, &m, "signature_expiry"), expiry);
+    assert_eq!(ev_i128(&env, &m, "bond_amount"), BOND);
+}
+
+/// `CandidateChallenged` event: topics=[candidate_challenged, candidate_id,
+/// market_id] and data={challenger, challenge_uri, bond_amount, challenged_at}.
+#[test]
+fn event_candidate_challenged_shape() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let candidate_id = client.propose(
+        &proposer,
+        &43u32,
+        &false,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+
+    let challenger = Address::generate(&env);
+    fund(&env, &token, &challenger, BOND);
+    let challenge_uri = String::from_str(&env, "ipfs://challenge-evidence");
+    client.challenge(&challenger, &candidate_id, &challenge_uri, &BOND);
+
+    let (topics, data) = find_event(&env, "candidate_challenged");
+
+    assert_eq!(
+        topic_sym(&env, &topics, 0u32),
+        Symbol::new(&env, "candidate_challenged")
+    );
+    let topic_cid: u32 = topics.get(1).unwrap().into_val(&env);
+    assert_eq!(topic_cid, candidate_id);
+    let topic_mid: u32 = topics.get(2).unwrap().into_val(&env);
+    assert_eq!(topic_mid, 43u32);
+
+    let m = data_map(&env, data);
+    assert_eq!(ev_addr(&env, &m, "challenger"), challenger);
+    assert_eq!(ev_i128(&env, &m, "bond_amount"), BOND);
+    let challenged_at: u64 = ev_u64(&env, &m, "challenged_at");
+    assert_eq!(challenged_at, 1_000);
+}
+
+/// `CandidateFinalized` event: topics=[candidate_finalized, candidate_id,
+/// market_id] and data={outcome, finalized_at}.
+#[test]
+fn event_candidate_finalized_shape() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let expiry = 1_000 + MIN_WINDOW + 7_200;
+    let candidate_id = client.propose(
+        &proposer,
+        &44u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+
+    // Advance past the challenge window.
+    set_time(&env, 1_000 + MIN_WINDOW + 1);
+    let finalizer = Address::generate(&env);
+    client.finalize(&finalizer, &candidate_id);
+
+    let (topics, data) = find_event(&env, "candidate_finalized");
+
+    assert_eq!(
+        topic_sym(&env, &topics, 0u32),
+        Symbol::new(&env, "candidate_finalized")
+    );
+    let topic_cid: u32 = topics.get(1).unwrap().into_val(&env);
+    assert_eq!(topic_cid, candidate_id);
+    let topic_mid: u32 = topics.get(2).unwrap().into_val(&env);
+    assert_eq!(topic_mid, 44u32);
+
+    let m = data_map(&env, data);
+    assert_eq!(ev_bool(&env, &m, "outcome"), true);
+    let finalized_at: u64 = ev_u64(&env, &m, "finalized_at");
+    assert_eq!(finalized_at, 1_000 + MIN_WINDOW + 1);
 }
