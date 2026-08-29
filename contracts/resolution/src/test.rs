@@ -1365,3 +1365,194 @@ fn slash_collateral_emits_collateral_slashed_event() {
     assert_eq!(client.get_proposer_collateral(&proposer), 0i128);
     assert_eq!(balance(&env, &token, &recipient), 10_000_000i128);
 }
+
+// ── arbitrate_uphold_proposer ABI fix (#726) ─────────────────────────────────
+//
+// `arbitrate_uphold_proposer` must invoke `resolve_market` with the same
+// real ABI as `finalize` (#683): (resolver: Address, market_id: String,
+// outcome: bool, signature: BytesN<64>, expires_at: u64). Tests verify the
+// correct market contract entrypoint is called with the right arguments,
+// matching the MockMarket's `LastResolvedCall` record.
+
+/// Propose a candidate for a given market and return (proposer, candidate_id).
+fn propose_candidate(
+    env: &Env,
+    client: &ResolutionContractClient<'_>,
+    token: &Address,
+    market_id: u32,
+) -> (Address, u32) {
+    let proposer = Address::generate(env);
+    fund(env, token, &proposer, BOND * 10);
+    set_time(env, 1_000);
+    let candidate_id = client.propose(
+        &proposer,
+        &market_id,
+        &true,
+        &signature(env),
+        &(env.ledger().timestamp() + 86_400),
+        &evidence(env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+    (proposer, candidate_id)
+}
+
+/// Challenge the given candidate and return the challenger address.
+fn challenge_candidate(
+    env: &Env,
+    client: &ResolutionContractClient<'_>,
+    token: &Address,
+    candidate_id: u32,
+) -> Address {
+    let challenger = Address::generate(env);
+    fund(env, token, &challenger, BOND);
+    client.challenge(&challenger, &candidate_id, &evidence(env), &BOND);
+    challenger
+}
+
+/// Helper: exhaust all appeal rounds so a candidate becomes arbitrable.
+fn exhaust_appeals(
+    env: &Env,
+    client: &ResolutionContractClient<'_>,
+    token: &Address,
+    candidate_id: u32,
+    proposer: &Address,
+) {
+    for _ in 0..crate::MAX_APPEAL_ROUNDS {
+        challenge_candidate(env, client, token, candidate_id);
+        client.appeal(
+            proposer,
+            &candidate_id,
+            &true,
+            &signature(env),
+            &evidence(env),
+            &MIN_WINDOW,
+        );
+    }
+    // Challenge one final time so the candidate is Challenged with
+    // appeal_round == MAX_APPEAL_ROUNDS (arbitrable).
+    challenge_candidate(env, client, token, candidate_id);
+}
+
+/// `arbitrate_uphold_proposer` must call `resolve_market` with the correct
+/// real ABI: (resolver=this_contract, market_id=String, outcome, sig, expiry).
+#[test]
+fn arbitrate_uphold_proposer_invokes_resolve_market_with_real_abi() {
+    let env = Env::default();
+    let (client, admin, market_contract, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND * 10);
+    let expiry = env.ledger().timestamp() + 86_400;
+    let candidate_id = client.propose(
+        &proposer,
+        &30u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+
+    exhaust_appeals(&env, &client, &token, candidate_id, &proposer);
+
+    // Advance past the last challenge deadline + arbitration timelock.
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    set_time(&env, candidate.challenge_deadline + crate::ARBITRATION_TIMELOCK_SECONDS + 1);
+
+    client.arbitrate_uphold_proposer(&admin, &candidate_id);
+
+    let last = mock_market::MockMarketClient::new(&env, &market_contract)
+        .get_last_resolved()
+        .expect("resolve_market must have been invoked by arbitrate_uphold_proposer");
+    // resolver must be the resolution contract itself.
+    assert_eq!(last.resolver, client.address);
+    // market_id must be passed as a String (base-10 of 30).
+    assert_eq!(last.market_id, String::from_str(&env, "30"));
+    // outcome must match what was proposed.
+    assert_eq!(last.outcome, true);
+    // must call V1 resolve_market for a V1 candidate.
+    assert!(!last.is_v2);
+}
+
+/// `arbitrate_uphold_proposer` must set the candidate's status to Finalized.
+#[test]
+fn arbitrate_uphold_proposer_sets_status_finalized() {
+    let env = Env::default();
+    let (client, admin, _market_contract, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND * 10);
+    let expiry = env.ledger().timestamp() + 86_400;
+    let candidate_id = client.propose(
+        &proposer,
+        &31u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+
+    exhaust_appeals(&env, &client, &token, candidate_id, &proposer);
+
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    set_time(&env, candidate.challenge_deadline + crate::ARBITRATION_TIMELOCK_SECONDS + 1);
+
+    let result = client.arbitrate_uphold_proposer(&admin, &candidate_id);
+    assert_eq!(result.status, crate::types::CandidateStatus::Finalized);
+    assert!(result.finalized_at.is_some());
+}
+
+/// `arbitrate_uphold_proposer` on a Proposed (not Challenged) candidate is
+/// rejected with NotArbitrable.
+#[test]
+fn arbitrate_uphold_proposer_rejects_non_arbitrable_candidate() {
+    let env = Env::default();
+    let (client, admin, _market_contract, token) = setup(&env);
+    let (_, candidate_id) = propose_candidate(&env, &client, &token, 32);
+
+    // Candidate is Proposed, not Challenged — arbitration not allowed.
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    set_time(&env, candidate.challenge_deadline + crate::ARBITRATION_TIMELOCK_SECONDS + 1);
+
+    assert_eq!(
+        client.try_arbitrate_uphold_proposer(&admin, &candidate_id),
+        Err(Ok(ContractError::NotArbitrable))
+    );
+}
+
+/// `arbitrate_uphold_proposer` before the arbitration timelock is rejected
+/// with ArbitrationTimelockNotElapsed.
+#[test]
+fn arbitrate_uphold_proposer_rejects_before_timelock() {
+    let env = Env::default();
+    let (client, admin, _market_contract, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND * 10);
+    let expiry = env.ledger().timestamp() + 86_400;
+    let candidate_id = client.propose(
+        &proposer,
+        &33u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
+    );
+
+    exhaust_appeals(&env, &client, &token, candidate_id, &proposer);
+
+    // Do NOT advance past the timelock.
+    assert_eq!(
+        client.try_arbitrate_uphold_proposer(&admin, &candidate_id),
+        Err(Ok(ContractError::ArbitrationTimelockNotElapsed))
+    );
+}
