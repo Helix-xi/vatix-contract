@@ -1,7 +1,7 @@
 use crate::types::TokenKind;
 use crate::{ContractError, OutcomeTokenContract, OutcomeTokenContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
     Address, Env, IntoVal, String,
 };
 
@@ -328,26 +328,107 @@ fn balances_are_isolated_across_markets() {
     assert_eq!(client.total_supply(&2, &TokenKind::Yes), 200);
 }
 
-// ── set_market_contract ─────────────────────────────────────────────────────
+// ── propose/execute market_contract (timelock) ──────────────────────────────
 
 #[test]
-fn admin_can_update_market_contract() {
+fn admin_can_propose_and_execute_market_contract() {
     let env = Env::default();
+    env.mock_all_auths();
     let (client, admin, _old_market) = setup(&env);
     let new_market = Address::generate(&env);
 
-    client.set_market_contract(&admin, &new_market);
+    client.propose_market_contract(&admin, &new_market);
+
+    // Advance time past the timelock.
+    env.ledger()
+        .set_timestamp(OutcomeTokenContract::MARKET_CONTRACT_TIMELOCK_SECONDS + 1);
+
+    let applied = client.execute_market_contract();
+    assert_eq!(applied, new_market);
     assert_eq!(client.get_config().market_contract, new_market);
 }
 
 #[test]
-fn non_admin_cannot_update_market_contract() {
+fn non_admin_cannot_propose_market_contract() {
     let env = Env::default();
     let (client, _admin, _market) = setup(&env);
     let stranger = Address::generate(&env);
     let new_market = Address::generate(&env);
     assert_eq!(
-        client.try_set_market_contract(&stranger, &new_market),
+        client.try_propose_market_contract(&stranger, &new_market),
         Err(Ok(ContractError::Unauthorized))
     );
+}
+
+// ── mint/burn market_contract-only gate (#730) ───────────────────────────────
+//
+// The tests in the "mint/burn authorization" section above confirm that the
+// registered market_contract address can authorize mint/burn, and that
+// callers with no auth at all are rejected. The tests below extend coverage
+// to the "only the *registered* contract" requirement: an address that is not
+// the registered market_contract must be rejected even if it presents its
+// own valid authorization.
+
+/// A stranger address providing its own auth must be rejected by mint — only
+/// the registered market_contract address can satisfy the gate.
+#[test]
+fn mint_rejected_when_wrong_address_is_authorized() {
+    let env = Env::default();
+    let (client, _admin, _market_contract, contract_id) = setup_unmocked(&env);
+    let user = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    // The stranger presents valid auth for *itself* but is not the registered
+    // market contract — `config.market_contract.require_auth()` will fail.
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "mint",
+            args: (&1u32, &user, &TokenKind::Yes, &100i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    // try_mint must return an auth error, not succeed.
+    assert!(client
+        .try_mint(&1, &user, &TokenKind::Yes, &100)
+        .is_err());
+}
+
+/// A stranger address providing its own auth must be rejected by burn — only
+/// the registered market_contract can authorize burn operations.
+#[test]
+fn burn_rejected_when_wrong_address_is_authorized() {
+    let env = Env::default();
+    let (client, _admin, market_contract, contract_id) = setup_unmocked(&env);
+    let user = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    // Fund user via the legitimate market_contract.
+    env.mock_auths(&[MockAuth {
+        address: &market_contract,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "mint",
+            args: (&1u32, &user, &TokenKind::Yes, &500i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.mint(&1, &user, &TokenKind::Yes, &500);
+
+    // Stranger presents its own auth — must be rejected.
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "burn",
+            args: (&1u32, &user, &TokenKind::Yes, &100i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client
+        .try_burn(&1, &user, &TokenKind::Yes, &100)
+        .is_err());
+    // Balance must be unchanged — the rejected burn must not have taken effect.
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 500);
 }
