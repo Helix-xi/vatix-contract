@@ -27,12 +27,22 @@
 //! |---------------------------|-----------------------|-------------------------------------------|
 //! | `StorageVersion`          | `u32`                 | Schema version guard                      |
 //! | `Admin`                   | `Address`             | Protocol admin                            |
+//! | `PendingAdmin`            | `PendingAddressChange`| Nominated admin awaiting timelock (#658)  |
 //! | `AuthorizedMarkets`       | `Vec<Address>`        | Market contracts allowed to call `collect_fee` |
+//! | `PendingMarketContract`   | `PendingAddressChange`| Proposed market contract awaiting timelock |
 //! | `TokenBalance(Address)`   | `i128`                | Current custodied balance per token (decreasable) |
 //! | `CumulativeFees(Address)` | `i128`                | Historical total collected per token (monotone)   |
 //! | `TotalCollected`          | `i128`                | Global monotone counter across all tokens |
+//! | `Paused`                  | `bool`                | Blocks `collect_fee`/`withdraw_fees` until unpaused |
 //! | `Stakeholders`            | `Vec<(Address, u32)>` | Revenue-share list, `share_bps` sums to 10_000 (#485) |
+//! | `PendingStakeholders`     | `PendingStakeholders` | Proposed stakeholder list awaiting timelock (#689) |
 //! | `FeeTokens`               | `Vec<Address>`        | Registry of every token ever collected (#484) |
+//! | `EmergencyMode`           | `EmergencyMode`       | Coordinated mode mirrored with Market/Resolution (#662) |
+//!
+//! See [`docs/treasury-storage.md`](../../../docs/treasury-storage.md) for
+//! full descriptions, storage tiers, and the reviewer checklist that keeps
+//! this table, that document, and the `StorageKey` enum itself in lockstep
+//! (#722).
 
 pub mod error;
 pub mod events;

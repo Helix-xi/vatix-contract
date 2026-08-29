@@ -8,6 +8,10 @@ use soroban_sdk::{contracttype, Address, Env, Vec};
 ///
 /// ## Version history
 /// - **v3:** Added `EmergencyMode` for coordinated emergency mode (#662).
+///   The variant was missing from `StorageKey` itself until #722 — see the
+///   `EmergencyMode` variant's doc comment below and
+///   `docs/treasury-storage.md`'s Reviewer Checklist for what that gap
+///   looked like and how to catch it earlier next time.
 /// - **v2:** Completed the multi-market `AuthorizedMarkets` registry
 ///   (`add_market`/`remove_market`/`list_markets`/`is_authorized_market`) and
 ///   added the `Stakeholders` fee-distribution list (#485).
@@ -46,6 +50,17 @@ pub enum StorageKey {
     /// `PendingMarketContract` so the revenue split cannot be rewritten
     /// instantly.
     PendingStakeholders,
+    /// Coordinated emergency mode mirrored with the Market/Resolution
+    /// contracts (#662). Defaults to `EmergencyMode::Normal` when unset.
+    ///
+    /// This variant was missing from the enum even though
+    /// `get_emergency_mode`/`set_emergency_mode` (below) referenced
+    /// `StorageKey::EmergencyMode` since the mode was introduced — the crate
+    /// has not compiled since that commit (#722). Restoring it here is the
+    /// fix, not a new schema addition: `STORAGE_VERSION` was already bumped
+    /// to `3` and the version-history comment above already documented this
+    /// key as if it existed.
+    EmergencyMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
