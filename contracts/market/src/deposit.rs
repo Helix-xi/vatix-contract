@@ -208,7 +208,7 @@ pub fn deposit_collateral(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Market;
+    use crate::types::{AdapterType, Market};
     use soroban_sdk::token::StellarAssetClient;
     use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
 
@@ -764,5 +764,74 @@ mod tests {
             Err(ContractError::ArithmeticOverflow),
             "overflow in total_deposited accumulation must return ArithmeticOverflow, not panic"
         );
+    }
+
+    // --- #501 / #709: deposit reentrancy guard ---
+
+    /// Regression test for the deposit reentrancy guard (#501, #709).
+    ///
+    /// The lock is held for the whole `deposit_collateral` call, wrapping the
+    /// external collateral-token `transfer`. A malicious or upgraded token
+    /// contract that calls back into `deposit_collateral` from inside its
+    /// `transfer` implementation lands on exactly this lock. Simulating the
+    /// lock being already held (as it would be during that reentrant call)
+    /// must make `deposit_collateral` fail closed with `ReentrantCall`. If
+    /// `DepositReentrancyGuard::acquire` is ever removed, this test fails.
+    #[test]
+    fn test_deposit_rejected_while_reentrancy_lock_held() {
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1;
+        let collateral_token = Address::generate(&env);
+        let contract_id = env.register(crate::MarketContract, ());
+
+        let market = create_test_market(&env, market_id, &collateral_token);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            // Simulate being mid-transfer inside an outer deposit call.
+            storage::set_deposit_locked(&env, true);
+        });
+        env.mock_all_auths();
+
+        let result = env.as_contract(&contract_id, || {
+            deposit_collateral(env.clone(), user.clone(), market_id, 5_000)
+        });
+        assert_eq!(result, Err(ContractError::ReentrantCall));
+    }
+
+    /// The lock must be released once the deposit returns (RAII `Drop`), so a
+    /// legitimate follow-up deposit still works. Guards against a regression
+    /// that leaves the lock stuck set.
+    #[test]
+    fn test_deposit_lock_released_after_successful_deposit() {
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let collateral_token = token.address();
+        let contract_id = env.register(crate::MarketContract, ());
+
+        let market = create_test_market(&env, market_id, &collateral_token);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &collateral_token).mint(&user, &20_000);
+
+        env.as_contract(&contract_id, || {
+            deposit_collateral(env.clone(), user.clone(), market_id, 5_000).unwrap();
+        });
+
+        let locked = env.as_contract(&contract_id, || storage::is_deposit_locked(&env));
+        assert!(!locked, "deposit lock must be cleared after the call returns");
+
+        // Second deposit still succeeds now that the lock is clear.
+        let result = env.as_contract(&contract_id, || {
+            deposit_collateral(env.clone(), user.clone(), market_id, 1_000)
+        });
+        assert!(result.is_ok());
     }
 }

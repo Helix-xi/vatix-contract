@@ -16,8 +16,8 @@
 //! | `collect_fee`                      | registered market contract|
 //! | `withdraw_fees`                    | admin                     |
 //! | `add_market` / `remove_market`     | admin                     |
-//! | `set_market_contract`              | admin                     |
-//! | `set_stakeholders`                 | admin                     |
+//! | `propose_market_contract` / `execute_market_contract` | admin (propose), timelock (execute) |
+//! | `propose_stakeholders` / `execute_stakeholders` | admin (propose), timelock (execute) |
 //! | `distribute_fees`                  | admin                     |
 //! | Getters                            | anyone                    |
 //!
@@ -375,8 +375,19 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let markets = soroban_sdk::vec![&env, pending.new_address.clone()];
-        storage::set_authorized_markets(&env, &markets);
+        // Append rather than replace (#720): this entrypoint and
+        // `add_market`/`remove_market` both mutate the single
+        // `AuthorizedMarkets` registry. Overwriting it with a fresh
+        // single-element vec here used to silently deregister every other
+        // market added via `add_market` — including markets still live and
+        // routing fees through this treasury — with no `market_removed`
+        // event to signal the drop. Matching `add_market`'s idempotent
+        // append keeps the two entrypoints consistent with one registry.
+        let mut markets = storage::get_authorized_markets(&env);
+        if !markets.contains(&pending.new_address) {
+            markets.push_back(pending.new_address.clone());
+            storage::set_authorized_markets(&env, &markets);
+        }
         storage::clear_pending_market_contract(&env);
 
         events::emit_market_contract_set(&env, &pending.new_address);
@@ -591,8 +602,8 @@ impl TreasuryContract {
     /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
     /// - [`TreasuryError::ContractPaused`] – treasury is paused.
     /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
-    /// - [`TreasuryError::NoStakeholdersConfigured`] – `set_stakeholders` has
-    ///   never been called.
+    /// - [`TreasuryError::NoStakeholdersConfigured`] – `propose_stakeholders`
+    ///   / `execute_stakeholders` has never installed a list.
     /// - [`TreasuryError::InsufficientBalance`] – the current `token` balance is zero.
     pub fn distribute_fees(env: Env, caller: Address, token: Address) -> Result<(), TreasuryError> {
         caller.require_auth();
@@ -634,6 +645,11 @@ impl TreasuryContract {
         // every transfer had already gone out — a reentrant call back into
         // a balance-reading entry point mid-loop would have observed the
         // stale, not-yet-decremented balance.
+        // Each stakeholder must appear exactly once in `payouts` — a second
+        // push here would double the real token transfer below while
+        // `distributed`/`remaining` still accounted for only one, silently
+        // overpaying every stakeholder by 2x relative to the treasury's own
+        // ledger (#721).
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut distributed: i128 = 0;
         for (stakeholder, share_bps) in stakeholders.iter() {
@@ -646,7 +662,6 @@ impl TreasuryContract {
                 distributed = distributed
                     .checked_add(amount)
                     .ok_or(TreasuryError::ArithmeticOverflow)?;
-                payouts.push_back((stakeholder, amount));
             }
         }
 
