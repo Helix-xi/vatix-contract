@@ -146,6 +146,16 @@ new `<name>StorageVersion` alongside the others it's compatible with, in
 the same PR — exactly like the existing `STORAGE_MIGRATION_GUIDE.md`
 "Version History" convention.
 
+**Issues #752–#755 (Resolution audit additions):** These changes add
+`get_factory()`, `get_market_contract()`, and `get_admin()` read-only
+view getters to the Resolution contract; make `MIN_BOND_AMOUNT` /
+`MIN_CHALLENGE_BOND_AMOUNT` constants `pub` for test visibility; and add
+regression tests. **No storage layout change — `STORAGE_VERSION` stays
+at `1`** and the `version-matrix.json` entry is unaffected. The new
+getters are purely additive to the ABI; no existing callers need
+updating. The `expected-hashes.json` WASM hash for the Resolution contract
+must be updated after the next deployment with these changes.
+
 ## Dual-read migration for the next storage bump
 
 The next time market or treasury's `STORAGE_VERSION` needs to move forward

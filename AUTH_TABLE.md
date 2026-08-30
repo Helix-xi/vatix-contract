@@ -93,6 +93,47 @@ not an admin check. `propose_v2` (#701) is the V2-oracle counterpart of
 `propose`: same access model, verified via the market contract's
 `verify_signature_v2` instead of the legacy `verify_signature`.
 
+### #754 — `finalize` keeper model
+
+`finalize(finalizer, candidate_id)` uses the **open-caller / keeper model**:
+*any* address may call it once the challenge window has closed, not just the
+admin or factory. The caller must still provide a valid `require_auth()`
+authorization for their own address, but no additional role check is applied —
+the only effective guards are the challenge-window deadline and the
+`CandidateStatus::Proposed` state check. This is intentional: backend oracle
+services, off-chain keepers, or the proposer themselves can all trigger
+finalization; restricting finalize to a single admin address would create a
+single point of failure for market settlement. Regression tests in
+`test.rs::finalize_accepts_any_authenticated_caller` verify this invariant.
+
+### #753 — Bond denomination constants
+
+Both bond floors are `10_000_000 stroops` (1 XLM). Any caller may read the
+values via `crate::MIN_BOND_AMOUNT` / `crate::MIN_CHALLENGE_BOND_AMOUNT` (both
+`pub const`). The regression test `bond_constants_match_documented_minimum` in
+`test.rs` will fail CI if either constant is accidentally changed, preventing
+silent re-introduction of free-spam attacks.
+
+### #752 — Dedicated address getters
+
+`get_factory(env) -> Address`, `get_market_contract(env) -> Address`, and
+`get_admin(env) -> Address` are read-only getters that return individual fields
+from `ResolutionConfig`. They complement `get_config()` and allow backend
+oracle services to discover registered addresses without deserializing the full
+config struct. All three are out of scope for this auth table (no mutation,
+no auth required).
+
+### #755 — `market_id` type bridge (`u32` → `String`)
+
+The resolution contract stores `market_id` as `u32` internally (natural for
+an auto-increment counter keyed by `StorageKey::CandidateByMarket(u32)`). The
+market contract's `resolve_market` entrypoint takes `market_id: String`
+(forward-compatible with non-numeric IDs). The private `market_id_to_string`
+helper converts `u32 → base-10 decimal String` before the cross-contract call.
+Regression tests `finalize_passes_market_id_as_decimal_string_to_resolve_market`
+and `finalize_passes_market_id_zero_as_string` in `test.rs` assert the
+conversion is correct, locking in the ABI bridge against future refactors.
+
 ## Outcome-token contract (`contracts/outcome-token/src/lib.rs`)
 
 Not previously covered by this table at all — added by this pass.

@@ -77,14 +77,14 @@ const MAX_APPEAL_ROUNDS: u32 = 3;
 /// Minimum bond a proposer must post (in the market's collateral token,
 /// stroops) when calling `propose`. Locked in this contract and refunded on
 /// successful finalize.
-const MIN_BOND_AMOUNT: i128 = 10_000_000;
+pub const MIN_BOND_AMOUNT: i128 = 10_000_000;
 
 /// Minimum bond a challenger must post (in the market's collateral token,
 /// stroops) when calling `challenge`. Locked in this contract alongside the
 /// proposer's bond. Requiring a bond (rather than a free challenge) is what
 /// makes griefing — repeatedly challenging to indefinitely delay resolution
 /// — economically costly instead of free.
-const MIN_CHALLENGE_BOND_AMOUNT: i128 = 10_000_000;
+pub const MIN_CHALLENGE_BOND_AMOUNT: i128 = 10_000_000;
 
 /// Delay, in seconds, that must elapse after a candidate's last challenge
 /// deadline before admin arbitration (`arbitrate_uphold_proposer`) or
@@ -192,6 +192,30 @@ impl ResolutionContract {
 
     pub fn get_config(env: Env) -> ResolutionConfig {
         storage::get_config(&env)
+    }
+
+    /// Return the registered factory address (#752).
+    ///
+    /// The factory is stored in `ResolutionConfig` at `initialize` time and
+    /// may later be rotated via the `propose_factory` / `execute_factory`
+    /// timelock. Backend oracle services need a direct getter rather than
+    /// deserializing the full `ResolutionConfig` struct, both for
+    /// convenience and because the full config type may grow over time.
+    pub fn get_factory(env: Env) -> Address {
+        storage::get_config(&env).factory
+    }
+
+    /// Return the registered market contract address.
+    ///
+    /// Symmetric to [`get_factory`] — backend services that manage the
+    /// resolution→market relationship need both addresses independently.
+    pub fn get_market_contract(env: Env) -> Address {
+        storage::get_config(&env).market_contract
+    }
+
+    /// Return the registered admin address.
+    pub fn get_admin(env: Env) -> Address {
+        storage::get_config(&env).admin
     }
 
     pub const ADDRESS_TIMELOCK_SECONDS: u64 = 172_800;
