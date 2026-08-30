@@ -2,9 +2,10 @@ use crate::types::{Market, Position};
 use soroban_sdk::{contracttype, Address, Env};
 
 // --- Storage Keys ---
-// TODO: https://github.com/vatix-protocol/vatix-contract/issues/79
-// Consider versioning storage layout to support future contract upgrades
-// without data migration issues
+// IMPORTANT: Storage versioning is critical for upgrade safety. When adding new
+// keys, increment the version and ensure migrations are handled. See UPGRADE_PLAYBOOK.md.
+// This contract supports oracle adapters (post-MVP). When adapters are enabled,
+// Ed25519 fallback is DISABLED to enforce fail-closed security model.
 
 #[contracttype]
 pub enum StorageKey {
@@ -12,6 +13,9 @@ pub enum StorageKey {
     Position(u32, Address),
     Admin,
     MarketCounter,
+    // Oracle adapter support - tracks if any adapters are registered
+    // When non-empty, Ed25519 fallback is disabled (fail-closed)
+    OracleAdapters,
 }
 
 // --- Market Storage ---
@@ -82,6 +86,26 @@ pub fn increment_market_id(env: &Env) -> u32 {
         .persistent()
         .set(&StorageKey::MarketCounter, &next_id);
     next_id
+}
+
+// --- Oracle Adapter Support ---
+// CRITICAL: When oracle adapters are enabled (non-empty), Ed25519 fallback MUST be disabled.
+// This enforces a fail-closed security model. See ADR-002 in docs/.
+
+/// Check if any oracle adapters are registered.
+/// If true, Ed25519 signature verification should not be used as fallback.
+pub fn has_oracle_adapters(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .has(&StorageKey::OracleAdapters)
+}
+
+/// Register that oracle adapters are enabled for this market contract.
+/// This disables Ed25519 fallback (fail-closed).
+pub fn enable_oracle_adapters(env: &Env) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OracleAdapters, &true);
 }
 
 #[cfg(test)]
