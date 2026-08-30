@@ -345,6 +345,40 @@ pub fn emit_candidate_appealed(env: &Env, candidate: &crate::types::ResolutionCa
 
 // ── Emergency Mode (Issue #662) ──────────────────────────────────────────────
 
+/// Emitted when the resolution contract is paused for emergency maintenance.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ResolutionPaused {
+    #[topic]
+    pub admin: Address,
+    pub paused_at: u64,
+}
+
+pub fn emit_resolution_paused(env: &Env, admin: &Address) {
+    ResolutionPaused {
+        admin: admin.clone(),
+        paused_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+/// Emitted when the resolution contract is unpaused, restoring normal operation.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ResolutionUnpaused {
+    #[topic]
+    pub admin: Address,
+    pub unpaused_at: u64,
+}
+
+pub fn emit_resolution_unpaused(env: &Env, admin: &Address) {
+    ResolutionUnpaused {
+        admin: admin.clone(),
+        unpaused_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct EmergencyModeChanged {

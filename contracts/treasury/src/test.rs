@@ -1218,3 +1218,43 @@ fn total_collected_invariant_after_collect_and_withdraw() {
     assert_eq!(s.client.total_collected(), 0);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regression tests — Issue #786: admin cannot be a contract address on init
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// initialize must reject a contract address as admin.
+/// Allowing a contract admin would let the contract be called without a real
+/// key owner's consent, opening a privilege-escalation vector.
+#[test]
+fn initialize_rejects_contract_address_as_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let market = Address::generate(&env);
+    // Register any contract to produce a contract address.
+    let contract_addr = env.register(TreasuryContract, ());
+    let treasury_id = env.register(TreasuryContract, ());
+    let client = TreasuryContractClient::new(&env, &treasury_id);
+
+    let err = client
+        .try_initialize(&contract_addr, &market)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::InvalidAdmin);
+}
+
+/// initialize must accept a regular user account (Ed25519 key) as admin.
+#[test]
+fn initialize_accepts_user_account_as_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env); // user account, not a contract
+    let market = Address::generate(&env);
+    let treasury_id = env.register(TreasuryContract, ());
+    let client = TreasuryContractClient::new(&env, &treasury_id);
+
+    client.initialize(&admin, &market);
+    assert_eq!(client.admin(), admin);
+}

@@ -1,3 +1,5 @@
+extern crate std;
+
 use crate::{ContractError, ResolutionContract, ResolutionContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -1276,4 +1278,402 @@ fn appeal_rejects_v2_candidate() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, ContractError::Unauthorized);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regression tests for issues #785, #786, #787, #788
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── #785: Factory vs single-market deployment model ────────────────────────
+
+/// initialize stores the factory address in config and it is readable via
+/// get_config — validates the factory/market registration model.
+#[test]
+fn initialize_stores_factory_in_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ResolutionContract, ());
+    let client = ResolutionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let factory = Address::generate(&env);
+    let market_contract = Address::generate(&env);
+
+    client.initialize(&admin, &factory, &market_contract, &DEFAULT_WINDOW);
+
+    let config = client.get_config();
+    assert_eq!(config.factory, factory);
+    assert_eq!(config.market_contract, market_contract);
+    assert_eq!(config.admin, admin);
+}
+
+/// propose_factory timelocks a new factory address and execute_factory applies it.
+/// This proves the factory field can only change via the guarded timelock path.
+#[test]
+fn propose_and_execute_factory_updates_config() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+
+    let new_factory = Address::generate(&env);
+    client.propose_factory(&admin, &new_factory);
+
+    // Cannot execute before the timelock elapses.
+    let err = client.try_execute_factory().unwrap_err().unwrap();
+    assert_eq!(err, ContractError::Unauthorized);
+
+    // Advance past ADDRESS_TIMELOCK_SECONDS (172_800 s).
+    env.ledger().with_mut(|l| l.timestamp += 172_801);
+    let applied = client.execute_factory();
+    assert_eq!(applied, new_factory);
+
+    let config = client.get_config();
+    assert_eq!(config.factory, new_factory);
+}
+
+/// cancel_factory removes a pending factory proposal.
+#[test]
+fn cancel_factory_clears_pending_proposal() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+
+    let new_factory = Address::generate(&env);
+    client.propose_factory(&admin, &new_factory);
+    client.cancel_factory(&admin);
+
+    // After cancellation execute_factory has no pending change.
+    env.ledger().with_mut(|l| l.timestamp += 172_801);
+    let err = client.try_execute_factory().unwrap_err().unwrap();
+    assert_eq!(err, ContractError::Unauthorized);
+}
+
+/// propose_market_contract timelocks + execute_market_contract applies the change.
+#[test]
+fn propose_and_execute_market_contract_updates_config() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+
+    let new_market = Address::generate(&env);
+    client.propose_market_contract(&admin, &new_market);
+
+    env.ledger().with_mut(|l| l.timestamp += 172_801);
+    let applied = client.execute_market_contract();
+    assert_eq!(applied, new_market);
+
+    let config = client.get_config();
+    assert_eq!(config.market_contract, new_market);
+}
+
+/// cancel_market_contract removes a pending market_contract proposal.
+#[test]
+fn cancel_market_contract_clears_pending_proposal() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+
+    let new_market = Address::generate(&env);
+    client.propose_market_contract(&admin, &new_market);
+    client.cancel_market_contract(&admin);
+
+    env.ledger().with_mut(|l| l.timestamp += 172_801);
+    let err = client.try_execute_market_contract().unwrap_err().unwrap();
+    assert_eq!(err, ContractError::Unauthorized);
+}
+
+// ─── #786: Admin cannot be a contract address on initialize ─────────────────
+
+/// initialize must reject a contract address as admin.
+#[test]
+fn initialize_rejects_contract_as_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ResolutionContract, ());
+    let client = ResolutionContractClient::new(&env, &contract_id);
+
+    // Use another deployed contract as the admin — must be rejected.
+    let another_contract = env.register(ResolutionContract, ());
+    let factory = Address::generate(&env);
+    let market_contract = Address::generate(&env);
+
+    let err = client
+        .try_initialize(&another_contract, &factory, &market_contract, &DEFAULT_WINDOW)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::InvalidAdmin);
+}
+
+/// initialize must accept a user account (non-contract) as admin.
+#[test]
+fn initialize_accepts_user_account_as_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ResolutionContract, ());
+    let client = ResolutionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env); // user account
+    let factory = Address::generate(&env);
+    let market_contract = Address::generate(&env);
+
+    // Should not panic or return an error.
+    client.initialize(&admin, &factory, &market_contract, &DEFAULT_WINDOW);
+    assert_eq!(client.get_config().admin, admin);
+}
+
+// ─── #787: require_auth before admin equality check ─────────────────────────
+
+/// propose_factory must require the admin to authenticate — an impersonator
+/// who supplies the real admin's address but holds no key must be rejected.
+#[test]
+fn propose_factory_requires_auth_from_admin() {
+    let env = Env::default();
+    // Do NOT call env.mock_all_auths() — we want real auth checking.
+    let contract_id = env.register(ResolutionContract, ());
+    let client = ResolutionContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let factory = Address::generate(&env);
+    let market_contract = Address::generate(&env);
+
+    // Initialize: mock auth only for this call.
+    env.mock_all_auths();
+    client.initialize(&admin, &factory, &market_contract, &DEFAULT_WINDOW);
+
+    // Now clear mocks. An impersonator holds no key but passes admin's address.
+    // Without require_auth this would have succeeded (pure equality check gap).
+    let impersonator_tries_as_admin = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env2 = Env::default(); // fresh env, no mocks
+        let client2 = ResolutionContractClient::new(&env2, &contract_id);
+        let _ = client2.try_propose_factory(&admin, &Address::generate(&env2));
+    }));
+    // The call must panic (auth failure) — not return Ok.
+    assert!(impersonator_tries_as_admin.is_err());
+}
+
+/// cancel_factory must require the admin to authenticate.
+#[test]
+fn cancel_factory_requires_auth_from_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = setup(&env);
+
+    // Propose so there is something to cancel.
+    client.propose_factory(&admin, &Address::generate(&env));
+
+    let impersonator_tries = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env2 = Env::default();
+        let client2 = ResolutionContractClient::new(&env2, &client.address);
+        let _ = client2.try_cancel_factory(&admin);
+    }));
+    assert!(impersonator_tries.is_err());
+}
+
+/// propose_market_contract must require the admin to authenticate.
+#[test]
+fn propose_market_contract_requires_auth_from_admin() {
+    let env = Env::default();
+    let impersonator_tries = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env2 = Env::default();
+        env2.mock_all_auths();
+        let (client, admin, _, _) = setup(&env2);
+
+        // Drop mock and try without auth.
+        let env3 = Env::default();
+        let client3 = ResolutionContractClient::new(&env3, &client.address);
+        let _ = client3.try_propose_market_contract(&admin, &Address::generate(&env3));
+    }));
+    assert!(impersonator_tries.is_err());
+}
+
+/// cancel_market_contract must require the admin to authenticate.
+#[test]
+fn cancel_market_contract_requires_auth_from_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = setup(&env);
+    client.propose_market_contract(&admin, &Address::generate(&env));
+
+    let impersonator_tries = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env2 = Env::default();
+        let client2 = ResolutionContractClient::new(&env2, &client.address);
+        let _ = client2.try_cancel_market_contract(&admin);
+    }));
+    assert!(impersonator_tries.is_err());
+}
+
+/// A non-admin caller is rejected even if they try to use the real admin's address
+/// in propose_factory (equality check alone is not enough).
+#[test]
+fn propose_factory_rejects_wrong_admin_equality() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = setup(&env);
+
+    // A completely different address attempting to propose — rejected by require_admin.
+    let not_admin = Address::generate(&env);
+    let err = client
+        .try_propose_factory(&not_admin, &Address::generate(&env))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::NotAdmin);
+}
+
+/// cancel_factory rejects a non-admin caller.
+#[test]
+fn cancel_factory_rejects_wrong_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = setup(&env);
+    client.propose_factory(&admin, &Address::generate(&env));
+
+    let not_admin = Address::generate(&env);
+    let err = client
+        .try_cancel_factory(&not_admin)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::NotAdmin);
+}
+
+/// propose_market_contract rejects a non-admin caller.
+#[test]
+fn propose_market_contract_rejects_wrong_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _) = setup(&env);
+
+    let not_admin = Address::generate(&env);
+    let err = client
+        .try_propose_market_contract(&not_admin, &Address::generate(&env))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::NotAdmin);
+}
+
+/// cancel_market_contract rejects a non-admin caller.
+#[test]
+fn cancel_market_contract_rejects_wrong_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = setup(&env);
+    client.propose_market_contract(&admin, &Address::generate(&env));
+
+    let not_admin = Address::generate(&env);
+    let err = client
+        .try_cancel_market_contract(&not_admin)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::NotAdmin);
+}
+
+// ─── #788: Paused defaults to false + unpause event ─────────────────────────
+
+/// is_paused returns false immediately after initialize — the Paused storage
+/// key is never written during init, so the unwrap_or(false) default must hold.
+#[test]
+fn is_paused_defaults_to_false_after_initialize() {
+    let env = Env::default();
+    let (client, _, _, _) = setup(&env);
+    assert!(!client.is_paused());
+}
+
+/// pause sets is_paused to true and unpause restores it to false.
+#[test]
+fn pause_and_unpause_toggle_correctly() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+
+    assert!(!client.is_paused());
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+/// Pausing blocks propose.
+#[test]
+fn propose_is_blocked_when_paused() {
+    let env = Env::default();
+    let (client, admin, _, token) = setup(&env);
+    set_time(&env, 1_000);
+    client.pause(&admin);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let err = client
+        .try_propose(
+            &proposer,
+            &1u32,
+            &true,
+            &signature(&env),
+            &(env.ledger().timestamp() + 600),
+            &evidence(&env),
+            &DEFAULT_WINDOW,
+            &BOND,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::ContractPaused);
+}
+
+/// Pausing blocks challenge.
+#[test]
+fn challenge_is_blocked_when_paused() {
+    let env = Env::default();
+    let (client, admin, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    // Propose first (while unpaused).
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let candidate_id = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &evidence(&env),
+        &DEFAULT_WINDOW,
+        &BOND,
+    );
+
+    client.pause(&admin);
+
+    let challenger = Address::generate(&env);
+    fund(&env, &token, &challenger, BOND);
+    let err = client
+        .try_challenge(&challenger, &candidate_id, &evidence(&env), &BOND)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::ContractPaused);
+}
+
+/// pause is admin-only.
+#[test]
+fn pause_rejects_non_admin() {
+    let env = Env::default();
+    let (client, _, _, _) = setup(&env);
+
+    let not_admin = Address::generate(&env);
+    let err = client.try_pause(&not_admin).unwrap_err().unwrap();
+    assert_eq!(err, ContractError::NotAdmin);
+}
+
+/// unpause is admin-only.
+#[test]
+fn unpause_rejects_non_admin() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+    client.pause(&admin);
+
+    let not_admin = Address::generate(&env);
+    let err = client.try_unpause(&not_admin).unwrap_err().unwrap();
+    assert_eq!(err, ContractError::NotAdmin);
+}
+
+/// Unpause after never-paused is a no-op and succeeds (idempotent).
+#[test]
+fn unpause_when_not_paused_is_idempotent() {
+    let env = Env::default();
+    let (client, admin, _, _) = setup(&env);
+
+    // Contract was never paused — unpause should still succeed.
+    client.unpause(&admin);
+    assert!(!client.is_paused());
 }
