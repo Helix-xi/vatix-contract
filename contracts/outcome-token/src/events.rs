@@ -129,3 +129,37 @@ pub fn emit_token_transferred(
     }
     .publish(env);
 }
+
+/// Emitted when an admin pauses the contract.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractPaused {
+    #[topic]
+    pub admin: Address,
+    pub paused_at: u64,
+}
+
+pub fn emit_contract_paused(env: &Env, admin: &Address) {
+    ContractPaused {
+        admin: admin.clone(),
+        paused_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+/// Emitted when an admin unpauses the contract.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractUnpaused {
+    #[topic]
+    pub admin: Address,
+    pub unpaused_at: u64,
+}
+
+pub fn emit_contract_unpaused(env: &Env, admin: &Address) {
+    ContractUnpaused {
+        admin: admin.clone(),
+        unpaused_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}

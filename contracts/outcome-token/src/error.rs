@@ -15,11 +15,7 @@ pub enum ContractError {
     /// belong to has settled its outcome.
     MarketNotResolved = 7,
     /// The on-chain storage schema version does not match the version this
-    /// contract build expects (Issue #696). Mirrors
-    /// `vatix_market_contract::ContractError::UpgradeRequired` /
-    /// `vatix_treasury_contract::TreasuryError::UpgradeRequired` — blocks
-    /// `mint`/`burn`/`transfer` against a stale on-chain layout after a
-    /// partial cross-contract upgrade instead of silently corrupting balances.
+    /// contract build expects (Issue #696).
     UpgradeRequired = 8,
     /// `execute_market_contract` was called but no pending rotation exists.
     NoPendingMarketContractChange = 9,
