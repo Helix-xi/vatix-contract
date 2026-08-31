@@ -34,6 +34,16 @@ pub const MAX_PRICE_AGE_SECONDS: u64 = 3_600;
 ///
 /// Matches the Reflector contract's `Asset` enum exactly so that
 /// cross-contract serialisation succeeds.
+///
+/// **Reviewed for #716**: variant names, order, and field types were checked
+/// directly against `reflector-network/reflector-contract`'s own `Asset`
+/// definition (`Stellar(Address)` / `Other(Symbol)`) — this enum matches it
+/// exactly, so there is no serialisation mismatch here. Soroban's
+/// `#[contracttype]` derive encodes an enum variant by its `Symbol` name
+/// (not positional index), so a mismatched *variant name* is what would
+/// actually cause `lastprice` to always return `UnauthorizedOracle`-style
+/// failures; a mismatched field type or missing variant would, respectively,
+/// fail to deserialise or panic. None of those apply here.
 #[contracttype]
 #[derive(Clone)]
 pub enum Asset {
