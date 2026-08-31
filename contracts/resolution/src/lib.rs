@@ -276,6 +276,22 @@ impl ResolutionContract {
         Ok(())
     }
 
+    /// Update the registered market contract address directly (admin only).
+    pub fn set_market_contract(
+        env: Env,
+        admin: Address,
+        market_contract: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        storage::assert_version(&env)?;
+        let mut config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        config.market_contract = market_contract.clone();
+        storage::set_config(&env, &config);
+        events::emit_market_contract_set(&env, &market_contract);
+        Ok(())
+    }
+
     /// Propose a signed resolution candidate for a market.
     ///
     /// The proposer must post a `bond_amount` (>= `MIN_BOND_AMOUNT`) in the
@@ -523,7 +539,7 @@ impl ResolutionContract {
         if candidate.status == CandidateStatus::Challenged {
             return Err(ContractError::CandidateAlreadyChallenged);
         }
-        if env.ledger().timestamp() > candidate.challenge_deadline {
+        if env.ledger().timestamp() >= candidate.challenge_deadline {
             return Err(ContractError::ChallengeWindowClosed);
         }
 
@@ -680,7 +696,7 @@ impl ResolutionContract {
         if candidate.status == CandidateStatus::Challenged {
             return Err(ContractError::CandidateAlreadyChallenged);
         }
-        if env.ledger().timestamp() <= candidate.challenge_deadline {
+        if env.ledger().timestamp() < candidate.challenge_deadline {
             return Err(ContractError::ChallengeWindowOpen);
         }
 

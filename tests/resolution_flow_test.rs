@@ -47,6 +47,8 @@ fn make_uri(env: &Env, s: &str) -> String {
     String::from_str(env, s)
 }
 
+const BOND_AMOUNT: i128 = 10_000_000;
+
 // ── propose ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -62,6 +64,7 @@ fn propose_creates_candidate_with_proposed_status() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence-hash"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     let candidate = client.get_candidate(&candidate_id).expect("candidate exists");
@@ -85,6 +88,7 @@ fn propose_returns_incrementing_ids() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence-1"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
     let id2 = client.propose(
         &proposer,
@@ -94,6 +98,7 @@ fn propose_returns_incrementing_ids() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence-2"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     assert_eq!(id1 + 1, id2, "candidate IDs should be auto-incremented");
@@ -104,14 +109,16 @@ fn duplicate_proposal_for_same_market_is_rejected() {
     let (env, client, _admin) = scaffold();
 
     let proposer = Address::generate(&env);
+    let expiry = env.ledger().timestamp() + CHALLENGE_WINDOW + 100;
     client.propose(
         &proposer,
         &1u32,
         &true,
         &make_signature(&env),
-        &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
+        &expiry,
         &make_uri(&env, "ipfs://first"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     let result = client.try_propose(
@@ -119,8 +126,10 @@ fn duplicate_proposal_for_same_market_is_rejected() {
         &1u32,
         &false,
         &make_signature(&env),
+        &expiry,
         &make_uri(&env, "ipfs://second"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     assert!(result.is_err(), "second proposal for same market must fail");
@@ -141,6 +150,7 @@ fn challenge_transitions_status_to_challenged() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     let challenger = Address::generate(&env);
@@ -148,6 +158,7 @@ fn challenge_transitions_status_to_challenged() {
         &challenger,
         &candidate_id,
         &make_uri(&env, "ipfs://challenge-evidence"),
+        &BOND_AMOUNT,
     );
 
     let candidate = client.get_candidate(&candidate_id).expect("exists");
@@ -168,6 +179,7 @@ fn challenge_after_window_closes_is_rejected() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     // Advance ledger past the challenge deadline.
@@ -180,6 +192,7 @@ fn challenge_after_window_closes_is_rejected() {
         &challenger,
         &candidate_id,
         &make_uri(&env, "ipfs://late-challenge"),
+        &BOND_AMOUNT,
     );
 
     assert!(result.is_err(), "challenge after window must be rejected");
@@ -200,6 +213,7 @@ fn finalize_after_window_returns_candidate_payload() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     // Advance time past the challenge window.
@@ -230,6 +244,7 @@ fn finalize_before_window_closes_is_rejected() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     // Do NOT advance time — window is still open.
@@ -249,8 +264,10 @@ fn challenged_candidate_cannot_be_finalized() {
         &1u32,
         &true,
         &make_signature(&env),
+        &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     let challenger = Address::generate(&env);
@@ -258,6 +275,7 @@ fn challenged_candidate_cannot_be_finalized() {
         &challenger,
         &candidate_id,
         &make_uri(&env, "ipfs://dispute"),
+        &BOND_AMOUNT,
     );
 
     // Advance past window — but challenged candidates still cannot finalize.
@@ -293,6 +311,7 @@ fn full_propose_then_finalize_flow() {
         &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
         &make_uri(&env, "ipfs://full-flow-evidence"),
         &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
     assert_eq!(

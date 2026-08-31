@@ -11,7 +11,7 @@ default-members = [
 ]
 
 [workspace.dependencies]
-soroban-sdk = "23"
+soroban-sdk = "=23.5.3"
 
 # Pin ed25519-dalek to v2 across the whole workspace.
 # soroban-env-host 23.x declares `>= 2.0.0` but its testutils code calls

@@ -409,6 +409,31 @@ impl TreasuryContract {
         Ok(())
     }
 
+    /// Update or register the authorized market contract address directly (admin only).
+    pub fn set_market_contract(
+        env: Env,
+        caller: Address,
+        market_contract: Address,
+    ) -> Result<(), TreasuryError> {
+        caller.require_auth();
+
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+
+        let mut markets = storage::get_authorized_markets(&env);
+        if !markets.contains(&market_contract) {
+            markets.push_back(market_contract.clone());
+            storage::set_authorized_markets(&env, &markets);
+        }
+        events::emit_market_contract_set(&env, &market_contract);
+        Ok(())
+    }
+
     /// Pause the treasury, blocking `collect_fee` and `withdraw_fees`.
     pub fn pause(env: Env, caller: Address) -> Result<(), TreasuryError> {
         caller.require_auth();

@@ -133,6 +133,24 @@ impl OutcomeTokenContract {
         storage::get_pending_market_contract(&env)
     }
 
+    /// Update the registered market contract address directly (admin only).
+    pub fn set_market_contract(
+        env: Env,
+        admin: Address,
+        market_contract: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        storage::assert_version(&env)?;
+        let mut config = storage::get_config(&env);
+        if admin != config.admin {
+            return Err(ContractError::Unauthorized);
+        }
+        config.market_contract = market_contract.clone();
+        storage::set_config(&env, &config);
+        events::emit_market_contract_set(&env, &market_contract);
+        Ok(())
+    }
+
     /// Update the SAC metadata (name and symbol). Admin only.
     pub fn set_metadata(
         env: Env,
