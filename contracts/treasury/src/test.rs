@@ -706,6 +706,54 @@ fn pause_blocks_withdraw_fees() {
     assert_eq!(err, TreasuryError::ContractPaused);
 }
 
+// ── #719: withdraw_fees pause gate (symmetry with collect_fee's #593 coverage
+// above — same gate, same ordering guarantee, but previously only exercised
+// by the single happy-path-of-rejection test above) ───────────────────────────
+
+/// The pause gate is checked before the admin-equality check, so even a
+/// caller that is NOT the admin gets `ContractPaused` rather than
+/// `Unauthorized` while the treasury is paused — mirrors
+/// `collect_fee_paused_before_market_auth_check`.
+#[test]
+fn withdraw_fees_paused_before_admin_check() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+    s.client.pause(&s.admin);
+
+    let rogue = Address::generate(&s.env);
+    let recipient = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_withdraw_fees(&rogue, &s.token, &recipient, &100_000i128)
+        .unwrap_err()
+        .unwrap();
+
+    // The pause gate fires before the admin-equality check.
+    assert_eq!(err, TreasuryError::ContractPaused);
+}
+
+/// Balances must remain unchanged after a rejected `withdraw_fees` during
+/// pause — mirrors `collect_fee_paused_leaves_balances_unchanged`.
+#[test]
+fn withdraw_fees_paused_leaves_balances_unchanged() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+    let balance_before = s.client.token_balance(&s.token);
+    let total_before = s.client.total_collected();
+
+    s.client.pause(&s.admin);
+
+    let recipient = Address::generate(&s.env);
+    let _ = s
+        .client
+        .try_withdraw_fees(&s.admin, &s.token, &recipient, &100_000i128);
+
+    assert_eq!(s.client.token_balance(&s.token), balance_before);
+    assert_eq!(s.client.total_collected(), total_before);
+}
+
 #[test]
 fn unpause_restores_operations() {
     let s = setup();
