@@ -86,6 +86,17 @@ Resolution redeployment `Market::set_resolution_contract` must be pointed at
 the new address in the same window — otherwise a stuck disputed market cannot
 be voided.
 
+**`Market::cancel_market` / `Market::reopen_market`.** These are pure
+admin-to-market status transitions with no cross-contract wiring
+dependencies. `cancel_market` moves `Active → Canceled`; `reopen_market`
+moves `Canceled → Active` (the **only** sanctioned reverse path). Both
+require `admin.require_auth()` and an equality check against the stored admin
+(see `AUTH_TABLE.md`). Neither entrypoint makes an external call or reads
+any contract address from storage — they are not affected by deploy order or
+re-wiring and require no special handling in this playbook beyond the normal
+admin-key handoff when rotating the admin via `propose_admin` /
+`accept_admin`.
+
 ## WASM hash pinning
 
 [`scripts/verify-wasm-hash.sh`](../verify-wasm-hash.sh) computes the
