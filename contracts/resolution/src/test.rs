@@ -1,8 +1,8 @@
 use crate::{ContractError, ResolutionContract, ResolutionContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, IntoVal, Map, String, Symbol, TryIntoVal, Val,
 };
 
 /// A minimal stand-in for the market contract's dispute-facing surface
