@@ -78,3 +78,17 @@
 
 ### `collect_fee` (`treasury/src/lib.rs`) — No violation
 `collect_fee` never makes an external token call itself; the actual token movement happens on the caller's side (a market contract's fee-routing code, already covered by the `withdraw_unused_collateral` entry above) before it invokes `collect_fee` to record the accounting entry. There is nothing to reorder within this function.
+
+---
+
+## Oracle-Adapter Fail-Closed Notes (#778)
+
+The `oracle-adapter` Cargo feature gates the Reflector/Pyth on-chain adapter dispatch. Two classes of misuse are now explicitly blocked:
+
+1. **Adapter enabled + feature compiled in:** The `verify_via_reflector` function performs the real on-chain Reflector call. If no `MarketAdapterConfig` is set for the market, it returns `OraclePriceUnavailable` — it never falls back to Ed25519.
+
+2. **Adapter enabled + feature NOT compiled in:** `verify_via_reflector` returns `UnauthorizedOracle` rather than silently accepting an Ed25519 signature. This prevents a misconfigured release build (adapter enabled at runtime, feature absent at compile time) from quietly resolving a market via the weaker Ed25519 path.
+
+3. **Adapter disabled (the default):** Both V1 and V2 dispatches fall back to direct Ed25519 verification, which is the intended behaviour for all current production deployments.
+
+The `oracle-adapter-not-default` CI job and the `oracle_adapter_is_not_in_default_features` test in `oracle.rs` enforce that the feature never ends up in `[features] default` without an explicit audit sign-off.

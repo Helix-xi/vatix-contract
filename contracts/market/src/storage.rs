@@ -638,6 +638,8 @@ pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, 
 /// Returns `None` when the admin has not configured an adapter for this
 /// market yet — callers should fall back to Ed25519 verification rather than
 /// treating this as an error (see `oracle::verify_market_outcome`).
+/// Only available when the `oracle-adapter` feature is compiled in (#778).
+#[cfg(feature = "oracle-adapter")]
 pub fn get_market_adapter_config(
     env: &Env,
     market_id: u32,
@@ -649,6 +651,8 @@ pub fn get_market_adapter_config(
 
 /// Set (or replace) the Reflector/Pyth adapter config for `market_id`
 /// (admin-gated in `lib.rs`).
+/// Only available when the `oracle-adapter` feature is compiled in (#778).
+#[cfg(feature = "oracle-adapter")]
 pub fn set_market_adapter_config(
     env: &Env,
     market_id: u32,

@@ -160,6 +160,13 @@ pub struct PendingAdapterTypeChange {
 /// entries need no migration; a market with no entry here simply has no
 /// adapter config and `oracle::verify_market_outcome` falls back to Ed25519
 /// (see #680).
+///
+/// This struct is only available when the `oracle-adapter` Cargo feature is
+/// compiled in (#778). Without that feature the `asset` field type
+/// (`oracle_adapter::Asset`) is not defined, so the whole struct is gated.
+/// Storage accessors (`storage::get_market_adapter_config` /
+/// `set_market_adapter_config`) are gated the same way.
+#[cfg(feature = "oracle-adapter")]
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct MarketAdapterConfig {
