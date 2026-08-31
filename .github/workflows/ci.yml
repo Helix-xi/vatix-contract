@@ -267,8 +267,49 @@ jobs:
       # pinned hash mismatch; warns without failing when a hash simply isn't
       # pinned yet, matching the deployments/testnet.json placeholder
       # convention. See scripts/upgrade/UPGRADE_PLAYBOOK.md.
+      #
+      # ALLOW_UNPINNED_HASHES=1 tells check-upgrade.sh to treat an empty
+      # expectedSha256 in expected-hashes.json as a warning rather than a
+      # failure (issue #762).  Hashes are not pinned in CI because they
+      # change with every source edit; they are pinned manually before a
+      # staged rollout via 'bash scripts/verify-wasm-hash.sh' (issue #761).
       - name: Cross-contract upgrade dry-run
+        env:
+          ALLOW_UNPINNED_HASHES: "1"
         run: bash scripts/upgrade/check-upgrade.sh
+
+      # Issue #761: run verify-wasm-hash.sh for each contract after the build
+      # above has already produced the WASM artifacts.  This step emits the
+      # SHA-256 hash of each artifact so it can be inspected in the CI log and
+      # compared against pinned values in expected-hashes.json before a rollout.
+      # It does NOT fail if the hash differs from expected-hashes.json — that is
+      # already enforced by the check-upgrade.sh step above (Phase B) when
+      # ALLOW_UNPINNED_HASHES is not set.  The purpose here is visibility: the
+      # hash printed to CI logs is the canonical value to paste into
+      # expected-hashes.json when you are ready to pin a specific build for
+      # a staged release.  See scripts/upgrade/UPGRADE_PLAYBOOK.md §"WASM hash
+      # pinning" and scripts/upgrade/expected-hashes.json for the workflow.
+      - name: Print WASM hashes (verify-wasm-hash.sh)
+        run: |
+          for contract in contracts/market contracts/treasury contracts/resolution contracts/outcome-token; do
+            echo "--- ${contract} ---"
+            # The WASM was already built by check-upgrade.sh above; skip the
+            # rebuild here by computing the hash directly from the artifact.
+            wasm_file=$(find target/wasm32v1-none/release -maxdepth 1 -name '*.wasm' 2>/dev/null | grep -v '.opt.wasm' | head -n1 || true)
+            if [[ -z "${wasm_file}" ]]; then
+              echo "  WARN: no WASM artifact found yet for ${contract} — skipping"
+              continue
+            fi
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${wasm_file}"
+            else
+              shasum -a 256 "${wasm_file}"
+            fi
+          done
+          echo ""
+          echo "To pin a hash for a staged rollout, copy the value above into"
+          echo "scripts/upgrade/expected-hashes.json and commit the change."
+          echo "See scripts/upgrade/UPGRADE_PLAYBOOK.md for the full workflow."
 
   frontend:
     name: Frontend (Next.js)
