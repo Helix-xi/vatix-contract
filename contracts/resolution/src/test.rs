@@ -1277,3 +1277,191 @@ fn appeal_rejects_v2_candidate() {
         .unwrap();
     assert_eq!(err, ContractError::Unauthorized);
 }
+
+// ── Issue #796: evidence_uri length cap ──────────────────────────────────────
+//
+// `validate_uri` enforces `1 <= len <= MAX_URI_BYTES (512)`.  The tests below
+// lock in this invariant for every entry point that accepts a URI so that a
+// future refactor which removes the guard will cause an immediate test failure
+// rather than silently shipping a storage-grief vector.
+//
+// Covered paths:
+//   • `propose`          – evidence_uri cap
+//   • `propose_v2`       – evidence_uri cap
+//   • `challenge`        – challenge_uri cap
+//   • `appeal`           – evidence_uri cap
+
+const MAX_URI: usize = 512;
+
+fn make_uri(env: &Env, len: usize) -> String {
+    // Build a URI of exactly `len` bytes from repeated 'a' characters.
+    let s: std::string::String = std::iter::repeat('a').take(len).collect();
+    String::from_str(env, &s)
+}
+
+/// `propose` rejects a URI that is exactly one byte over the 512-byte cap.
+#[test]
+fn propose_rejects_evidence_uri_too_long() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, 10_000_000i128);
+
+    let long_uri = make_uri(&env, MAX_URI + 1);
+    let result = client.try_propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &long_uri,
+        &300,
+        &10_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(ContractError::InvalidEvidenceUri)));
+}
+
+/// `propose` accepts a URI of exactly 512 bytes (the limit itself is valid).
+#[test]
+fn propose_accepts_evidence_uri_at_max_length() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, 10_000_000i128);
+
+    let max_uri = make_uri(&env, MAX_URI);
+    let result = client.try_propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &max_uri,
+        &300,
+        &10_000_000i128,
+    );
+    assert!(result.is_ok(), "512-byte URI should be accepted: {result:?}");
+}
+
+/// `propose` rejects an empty URI.
+#[test]
+fn propose_rejects_empty_evidence_uri() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, 10_000_000i128);
+
+    let empty_uri = String::from_str(&env, "");
+    let result = client.try_propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &empty_uri,
+        &300,
+        &10_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(ContractError::InvalidEvidenceUri)));
+}
+
+/// `propose_v2` rejects a URI that exceeds 512 bytes.
+#[test]
+fn propose_v2_rejects_evidence_uri_too_long() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, 10_000_000i128);
+
+    let long_uri = make_uri(&env, MAX_URI + 1);
+    let valid_until = env.ledger().timestamp() + 600;
+    let result = client.try_propose_v2(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &valid_until,
+        &1u32,
+        &BytesN::from_array(&env, &[3u8; 32]),
+        &long_uri,
+        &300,
+        &10_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(ContractError::InvalidEvidenceUri)));
+}
+
+/// `challenge` rejects a challenge_uri that exceeds 512 bytes.
+#[test]
+fn challenge_rejects_challenge_uri_too_long() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, 10_000_000i128);
+    let candidate_id = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &evidence(&env),
+        &300,
+        &10_000_000i128,
+    );
+
+    let challenger = Address::generate(&env);
+    fund(&env, &token, &challenger, 10_000_000i128);
+    let long_uri = make_uri(&env, MAX_URI + 1);
+    let result = client.try_challenge(&challenger, &candidate_id, &long_uri, &10_000_000i128);
+    assert_eq!(result, Err(Ok(ContractError::InvalidEvidenceUri)));
+}
+
+/// `appeal` rejects an evidence_uri that exceeds 512 bytes.
+#[test]
+fn appeal_rejects_evidence_uri_too_long() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, 10_000_000i128);
+    let candidate_id = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 600),
+        &evidence(&env),
+        &300,
+        &10_000_000i128,
+    );
+
+    let challenger = Address::generate(&env);
+    fund(&env, &token, &challenger, 10_000_000i128);
+    client.challenge(
+        &challenger,
+        &candidate_id,
+        &evidence(&env),
+        &10_000_000i128,
+    );
+
+    let long_uri = make_uri(&env, MAX_URI + 1);
+    let result = client.try_appeal(
+        &proposer,
+        &candidate_id,
+        &true,
+        &signature(&env),
+        &long_uri,
+        &300,
+    );
+    assert_eq!(result, Err(Ok(ContractError::InvalidEvidenceUri)));
+}

@@ -179,12 +179,27 @@ The `upgrade-dry-run` job in
 `check-upgrade.sh` on every push/PR with the full toolchain available
 (Rust + Stellar CLI), so:
 
-- Storage-version drift between source and `version-matrix.json` fails CI.
-- A pinned WASM hash that doesn't match the freshly built artifact fails CI.
-- The `UpgradeRequired` regression tests for all four contracts (market,
-  treasury, resolution, outcome-token — see #696) run as part of the same
-  job, so a change that accidentally removes a version guard (see "Pitfall
-  2" in `STORAGE_MIGRATION_GUIDE.md`) fails CI too.
+- **Phase A — Storage-version drift** (`check_version_drift`): checks all
+  four contracts — `market`, `treasury`, `resolution`, and `outcomeToken`
+  — by comparing the `STORAGE_VERSION` constant in each contract's
+  `storage.rs` against the recorded value in `version-matrix.json`. Fails
+  on any mismatch. As of Issue #696, Resolution and Outcome Token carry
+  their own `STORAGE_VERSION` constant and are fully included in this check
+  on equal footing with Market and Treasury. Closes Issue #800.
+
+- **Phase B — WASM hash verification**: builds each contract via
+  `stellar contract build` and compares against `expected-hashes.json`.
+  An unpinned hash is a warning; a pinned-but-mismatched hash is a failure.
+
+- **Phase C — UpgradeRequired regression tests**: runs the version-guard
+  unit tests for all four contracts (`vatix-market-contract`,
+  `vatix-treasury-contract`, `vatix-resolution-contract`,
+  `vatix-outcome-token-contract`) so a change that accidentally removes a
+  `storage::assert_version` guard fails CI immediately.
+
+In summary: storage-version drift between source and `version-matrix.json`
+fails CI. A pinned WASM hash that doesn't match the freshly built artifact
+fails CI. Removing a version guard from any of the four contracts fails CI.
 
 ## Rollback
 

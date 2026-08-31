@@ -270,6 +270,72 @@ jobs:
       - name: Cross-contract upgrade dry-run
         run: bash scripts/upgrade/check-upgrade.sh
 
+  # ── Issue #798: testnet.json schema validation ──────────────────────────────
+  # Validates deployments/testnet.json against the schema documented in
+  # deployments/README.md before any code that depends on it (frontend, scripts)
+  # can silently consume a malformed file and deploy nothing.
+  #
+  # What is checked:
+  #  1. deployments/testnet.json is valid JSON (jq empty fails on parse error).
+  #  2. The required top-level string fields are present and non-null:
+  #     network, networkPassphrase, rpcUrl.
+  #  3. The .contracts object has exactly the four required keys:
+  #     market, treasury, resolution, outcomeToken.
+  #  4. Each contract entry contains the required sub-keys:
+  #     contractId, wasmHash (both strings; empty string is OK as a placeholder).
+  #
+  # A missing field, wrong type, or extra-unknown top-level structure fails
+  # the build immediately rather than letting a misconfigured registry propagate
+  # to the frontend or deployment scripts.
+  testnet-json-validate:
+    name: Validate deployments/testnet.json schema
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate testnet.json schema (Issue #798)
+        run: |
+          set -euo pipefail
+          FILE="deployments/testnet.json"
+
+          echo "→ Checking $FILE is valid JSON..."
+          jq empty "$FILE"
+
+          echo "→ Checking required top-level string fields..."
+          for field in network networkPassphrase rpcUrl; do
+            val=$(jq -r ".${field} // empty" "$FILE")
+            if [[ -z "$val" ]]; then
+              echo "ERROR: missing or null field: .${field}" >&2
+              exit 1
+            fi
+          done
+
+          echo "→ Checking .contracts has exactly the four required contract keys..."
+          REQUIRED_CONTRACTS=("market" "treasury" "resolution" "outcomeToken")
+          for name in "${REQUIRED_CONTRACTS[@]}"; do
+            present=$(jq -r ".contracts.${name} // empty" "$FILE")
+            if [[ -z "$present" ]]; then
+              echo "ERROR: .contracts.${name} is missing" >&2
+              exit 1
+            fi
+          done
+
+          echo "→ Checking each contract entry has contractId and wasmHash fields..."
+          for name in "${REQUIRED_CONTRACTS[@]}"; do
+            for subfield in contractId wasmHash; do
+              # The field must exist (even if its value is an empty string).
+              has=$(jq --arg c "$name" --arg f "$subfield" \
+                'if .contracts[$c] | has($f) then "yes" else "no" end' "$FILE")
+              if [[ "$has" != '"yes"' ]]; then
+                echo "ERROR: .contracts.${name}.${subfield} is missing" >&2
+                exit 1
+              fi
+            done
+          done
+
+          echo "✓ deployments/testnet.json schema is valid."
+
   frontend:
     name: Frontend (Next.js)
     runs-on: ubuntu-latest
