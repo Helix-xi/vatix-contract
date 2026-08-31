@@ -1,7 +1,7 @@
 use crate::types::TokenKind;
 use crate::{ContractError, OutcomeTokenContract, OutcomeTokenContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
     Address, Env, IntoVal, String,
 };
 
@@ -328,26 +328,119 @@ fn balances_are_isolated_across_markets() {
     assert_eq!(client.total_supply(&2, &TokenKind::Yes), 200);
 }
 
-// ── set_market_contract ─────────────────────────────────────────────────────
+// ── propose/execute market_contract (timelock) ──────────────────────────────
 
 #[test]
-fn admin_can_update_market_contract() {
+fn admin_can_propose_and_execute_market_contract() {
     let env = Env::default();
+    env.mock_all_auths();
     let (client, admin, _old_market) = setup(&env);
     let new_market = Address::generate(&env);
 
-    client.set_market_contract(&admin, &new_market);
+    client.propose_market_contract(&admin, &new_market);
+
+    // Advance time past the timelock.
+    env.ledger()
+        .set_timestamp(OutcomeTokenContract::MARKET_CONTRACT_TIMELOCK_SECONDS + 1);
+
+    let applied = client.execute_market_contract();
+    assert_eq!(applied, new_market);
     assert_eq!(client.get_config().market_contract, new_market);
 }
 
 #[test]
-fn non_admin_cannot_update_market_contract() {
+fn non_admin_cannot_propose_market_contract() {
     let env = Env::default();
     let (client, _admin, _market) = setup(&env);
     let stranger = Address::generate(&env);
     let new_market = Address::generate(&env);
     assert_eq!(
-        client.try_set_market_contract(&stranger, &new_market),
+        client.try_propose_market_contract(&stranger, &new_market),
         Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+// ── decimals SAC compatibility (#728) ────────────────────────────────────────
+//
+// The Stellar Asset Contract (SAC) standard fixes decimals at 7. Outcome
+// tokens must match that constant so that mint/burn amounts are scaled
+// consistently with the collateral token. A mismatch — e.g. decimals = 6 or
+// 8 — would silently corrupt the ratio between collateral deposited and
+// tokens minted whenever the market contract converts between the two.
+
+/// `decimals()` is a compile-time constant; it must equal 7 to be SAC-
+/// compatible.
+#[test]
+fn decimals_is_seven_sac_standard() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    assert_eq!(
+        client.decimals(),
+        7u32,
+        "decimals must be 7 to match the SAC standard"
+    );
+}
+
+/// One whole token at 7-decimal SAC precision equals 10_000_000 base units.
+/// Minting exactly that amount must produce the correct balance, confirming
+/// the contract treats the unit consistently with the SAC scale.
+#[test]
+fn mint_one_whole_token_at_sac_decimals() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    let user = Address::generate(&env);
+
+    // 1 token = 10^7 stroops (SAC 7-decimal unit).
+    let one_token: i128 = 10_000_000;
+    client.mint(&1, &user, &TokenKind::Yes, &one_token);
+
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), one_token);
+    assert_eq!(client.total_supply(&1, &TokenKind::Yes), one_token);
+}
+
+/// The total supply across a batch of mints must accumulate correctly using
+/// 7-decimal SAC amounts, ensuring no precision loss in integer arithmetic.
+#[test]
+fn total_supply_accumulates_correctly_with_sac_amounts() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    // 0.5 tokens and 1.5 tokens, expressed in 7-decimal SAC units.
+    let half_token: i128 = 5_000_000;
+    let one_half_token: i128 = 15_000_000;
+
+    client.mint(&1, &user_a, &TokenKind::Yes, &half_token);
+    client.mint(&1, &user_b, &TokenKind::Yes, &one_half_token);
+
+    assert_eq!(
+        client.total_supply(&1, &TokenKind::Yes),
+        half_token + one_half_token,
+        "total supply must equal the sum of all SAC-scaled mint amounts"
+    );
+}
+
+/// Burning a SAC-scaled amount must decrease supply by exactly that amount,
+/// with no rounding error.
+#[test]
+fn burn_sac_amount_reduces_supply_exactly() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    let user = Address::generate(&env);
+
+    let two_tokens: i128 = 20_000_000; // 2 * 10^7
+    let half_token: i128 = 5_000_000; // 0.5 * 10^7
+
+    client.mint(&1, &user, &TokenKind::Yes, &two_tokens);
+    client.burn(&1, &user, &TokenKind::Yes, &half_token);
+
+    assert_eq!(
+        client.balance(&1, &user, &TokenKind::Yes),
+        two_tokens - half_token,
+    );
+    assert_eq!(
+        client.total_supply(&1, &TokenKind::Yes),
+        two_tokens - half_token,
     );
 }
