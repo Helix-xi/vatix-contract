@@ -513,6 +513,15 @@ fn my_function() { ... }
 
 The CI step is defined in `.github/workflows/ci.yml` and runs automatically on every push and pull request.
 
+## Property Test Snapshots Policy (#766)
+
+Property test snapshots and regression seeds (`test_snapshots/`, `property_locked_collateral*`) are uncommitted by default per `.gitignore` rules to keep the repository clean.
+To regenerate or run property test invariants locally:
+
+```bash
+cargo test --test proptest_locked_invariant
+```
+
 ## Security
 
 Smart contract security is critical. All contracts will undergo:

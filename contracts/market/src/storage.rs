@@ -334,7 +334,10 @@ pub fn set_total_locked_collateral(env: &Env, user: &Address, locked: i128) {
         .set(&StorageKey::TotalLockedCollateral(user.clone()), &locked);
 }
 
-// --- Market Participants (Issue #495) ---
+// --- Market Participants (Issue #495 / Issue #768) ---
+
+/// Maximum allowed participants per market to bound storage and execution limits (#768).
+pub const MAX_MARKET_PARTICIPANTS: u32 = 1000;
 
 /// Return the ordered list of every address that has ever held a position
 /// in `market_id`. Empty if the market has no positions yet.
@@ -345,15 +348,18 @@ pub fn get_market_participants(env: &Env, market_id: u32) -> Vec<Address> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
-/// Record `user` as a participant of `market_id` if not already tracked.
+/// Record `user` as a participant of `market_id` if not already tracked and
+/// under the storage limit (`MAX_MARKET_PARTICIPANTS`).
 /// Idempotent — safe to call on every position update.
 pub fn add_market_participant(env: &Env, market_id: u32, user: &Address) {
     let mut participants = get_market_participants(env, market_id);
     if !participants.iter().any(|p| &p == user) {
-        participants.push_back(user.clone());
-        env.storage()
-            .persistent()
-            .set(&StorageKey::MarketParticipants(market_id), &participants);
+        if participants.len() < MAX_MARKET_PARTICIPANTS {
+            participants.push_back(user.clone());
+            env.storage()
+                .persistent()
+                .set(&StorageKey::MarketParticipants(market_id), &participants);
+        }
     }
 }
 
