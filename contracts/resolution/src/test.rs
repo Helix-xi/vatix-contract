@@ -1,3 +1,5 @@
+extern crate std;
+
 use crate::{ContractError, ResolutionContract, ResolutionContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},

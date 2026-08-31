@@ -118,6 +118,12 @@ impl ResolutionContract {
         market_contract: Address,
         challenge_window_secs: u64,
     ) -> Result<(), ContractError> {
+        // Reject contract addresses as admin: a contract admin can be called
+        // without a real key owner's consent, which would allow privilege
+        // escalation. Mirrors the check in `vatix_market_contract::initialize`.
+        if admin.executable().is_some() {
+            return Err(ContractError::InvalidAdmin);
+        }
         admin.require_auth();
         if storage::has_config(&env) {
             return Err(ContractError::AlreadyInitialized);
@@ -197,6 +203,7 @@ impl ResolutionContract {
     pub const ADDRESS_TIMELOCK_SECONDS: u64 = 172_800;
 
     pub fn propose_factory(env: Env, admin: Address, factory: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -227,6 +234,7 @@ impl ResolutionContract {
     }
 
     pub fn cancel_factory(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -239,6 +247,7 @@ impl ResolutionContract {
         admin: Address,
         market_contract: Address,
     ) -> Result<(), ContractError> {
+        admin.require_auth();
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -269,6 +278,7 @@ impl ResolutionContract {
     }
 
     pub fn cancel_market_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -299,6 +309,7 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
+        require_not_paused(&env)?;
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: resolution proposals are blocked unless mode is Normal
@@ -453,7 +464,7 @@ impl ResolutionContract {
             outcome,
             signature,
             signature_expiry: valid_until,
-            proposer,
+            proposer: proposer.clone(),
             evidence_uri,
             proposed_at,
             challenge_deadline: proposed_at + challenge_window_seconds,
@@ -509,6 +520,7 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<(), ContractError> {
         challenger.require_auth();
+        require_not_paused(&env)?;
         storage::assert_version(&env)?;
         // Emergency mode: challenges are blocked in SettleOnly and GlobalFreeze
         require_emergency_mode_allows(
@@ -583,6 +595,7 @@ impl ResolutionContract {
         challenge_window_seconds: u64,
     ) -> Result<(), ContractError> {
         proposer.require_auth();
+        require_not_paused(&env)?;
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: appeals are blocked unless mode is Normal
@@ -654,6 +667,7 @@ impl ResolutionContract {
         candidate_id: u32,
     ) -> Result<ResolutionCandidate, ContractError> {
         finalizer.require_auth();
+        require_not_paused(&env)?;
         // Storage-version guard (Issue #696): a stale/partially-upgraded
         // deployment must fail closed here rather than let `finalize` run
         // its bond-settlement and `resolve_market` callback against a
@@ -921,6 +935,46 @@ impl ResolutionContract {
         storage::get_emergency_mode(&env)
     }
 
+    /// Pause the resolution contract, blocking all state-mutating operations
+    /// until `unpause` is called.
+    ///
+    /// Only the stored admin may call this. Emits a `resolution_paused` event
+    /// so off-chain indexers can track the pause state.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        storage::assert_version(&env)?;
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::set_paused(&env, true);
+        events::emit_resolution_paused(&env, &admin);
+        Ok(())
+    }
+
+    /// Unpause the resolution contract, restoring normal operation.
+    ///
+    /// Only the stored admin may call this. Emits a `resolution_unpaused`
+    /// event so off-chain indexers can track the pause state.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        storage::assert_version(&env)?;
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::set_paused(&env, false);
+        events::emit_resolution_unpaused(&env, &admin);
+        Ok(())
+    }
+
+    /// Return whether the resolution contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
+    }
+
     /// Admin-only, timelocked: uphold the proposer's currently-disputed
     /// outcome once `MAX_APPEAL_ROUNDS` have been exhausted and
     /// `ARBITRATION_TIMELOCK_SECONDS` have elapsed since the last challenge
@@ -934,6 +988,7 @@ impl ResolutionContract {
         candidate_id: u32,
     ) -> Result<ResolutionCandidate, ContractError> {
         admin.require_auth();
+        require_not_paused(&env)?;
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -991,6 +1046,7 @@ impl ResolutionContract {
         candidate_id: u32,
     ) -> Result<ResolutionCandidate, ContractError> {
         admin.require_auth();
+        require_not_paused(&env)?;
         storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -1064,6 +1120,52 @@ impl ResolutionContract {
 fn require_admin(admin: &Address, config: &ResolutionConfig) -> Result<(), ContractError> {
     if admin != &config.admin {
         return Err(ContractError::NotAdmin);
+    }
+    Ok(())
+}
+
+fn invoke_resolve_market(env: &Env, config: &ResolutionConfig, candidate: &ResolutionCandidate) {
+    if candidate.passphrase_hash.is_some() {
+        let args: Vec<Val> = soroban_sdk::vec![
+            env,
+            env.current_contract_address().into_val(env),
+            market_id_to_string(env, candidate.market_id).into_val(env),
+            candidate.outcome.into_val(env),
+            candidate.signature_expiry.into_val(env),
+            candidate.epoch.into_val(env),
+            candidate.signature.clone().into_val(env),
+            candidate.passphrase_hash.clone().unwrap().into_val(env),
+        ];
+        let _: () = env.invoke_contract(
+            &config.market_contract,
+            &Symbol::new(env, "resolve_market_v2"),
+            args,
+        );
+        return;
+    }
+
+    let args: Vec<Val> = soroban_sdk::vec![
+        env,
+        env.current_contract_address().into_val(env),
+        market_id_to_string(env, candidate.market_id).into_val(env),
+        candidate.outcome.into_val(env),
+        candidate.signature.clone().into_val(env),
+        candidate.signature_expiry.into_val(env),
+    ];
+    let _: () = env.invoke_contract(
+        &config.market_contract,
+        &Symbol::new(env, "resolve_market"),
+        args,
+    );
+}
+
+/// Guard: reject state-mutating operations when the contract is paused.
+///
+/// # Errors
+/// - [`ContractError::ContractPaused`] – the contract is in emergency halt.
+fn require_not_paused(env: &Env) -> Result<(), ContractError> {
+    if storage::is_paused(env) {
+        return Err(ContractError::ContractPaused);
     }
     Ok(())
 }

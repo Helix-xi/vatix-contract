@@ -33,6 +33,8 @@ pub enum StorageKey {
     /// contract's own balance until an admin registers one (mirrors the
     /// market contract's "fee retained, no treasury" pattern).
     Treasury,
+    /// Pending treasury address awaiting its timelock delay.
+    PendingTreasury,
     /// Pending factory address awaiting its timelock delay.
     PendingFactory,
     /// Pending market contract address awaiting its timelock delay.
@@ -78,6 +80,18 @@ pub fn get_config(env: &Env) -> ResolutionConfig {
 
 pub fn set_config(env: &Env, config: &ResolutionConfig) {
     env.storage().persistent().set(&StorageKey::Config, config);
+}
+
+pub fn get_pending_treasury(env: &Env) -> Option<crate::types::PendingAddressChange> {
+    env.storage().persistent().get(&StorageKey::PendingTreasury)
+}
+
+pub fn set_pending_treasury(env: &Env, pending: &crate::types::PendingAddressChange) {
+    env.storage().persistent().set(&StorageKey::PendingTreasury, pending);
+}
+
+pub fn clear_pending_treasury(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingTreasury);
 }
 
 pub fn get_pending_factory(env: &Env) -> Option<crate::types::PendingAddressChange> {
