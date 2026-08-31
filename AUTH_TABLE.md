@@ -21,7 +21,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | Entrypoint                     | require_auth | admin-equality check | Notes |
 |---------------------------------|:---:|:---:|-------|
 | `initialize`                   | ✅ | n/a (bootstraps admin) | Guarded by `AlreadyInitialized` instead. As of #701, also defaults legacy V1 oracle signatures (`OracleV1Disabled`) to disabled — a fresh deployment fails closed until the admin explicitly re-enables V1 via `set_oracle_v1_disabled`. |
-| `propose_admin`                 | — | ✅ (`storage::get_admin`) | Auth deferred to `accept_admin`. |
+| `propose_admin`                 | ✅ (`current_admin`) | ✅ (`storage::get_admin`) | Current admin must authorize the nomination; nominee is also validated to be an account, not a contract (`validate_admin_address`). The transfer still only completes on `accept_admin`. |
 | `accept_admin`                  | ✅ | ✅ (must match `PendingAdmin`) | Two-step transfer. |
 | `cancel_admin_transfer`          | ✅ | ✅ | Cancels a pending `propose_admin`. |
 | `initialize_market`             | ✅ | ✅ | |
@@ -62,11 +62,11 @@ are out of scope for this table.
 | `propose_admin` / `execute_admin` / `cancel_admin` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | 48h timelock (`ADDRESS_TIMELOCK_SECONDS`) admin rotation. |
 | `add_market`           | ✅ | ✅ | |
 | `remove_market`        | ✅ | ✅ | |
-| `propose_market_contract` / `execute_market_contract` / `cancel_market_contract` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked market-contract rotation. |
+| `propose_market_contract` / `execute_market_contract` / `cancel_market_contract` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked market-contract rotation. **Fixed by #720**: `execute_market_contract` used to overwrite the entire `AuthorizedMarkets` registry with a single-element vec, silently deregistering every market previously added via `add_market` (no `market_removed` event, no error) — registry drift between the two entrypoints that both mutate `AuthorizedMarkets`. It now appends idempotently, matching `add_market`. |
 | `pause` / `unpause`    | ✅ | ✅ | |
 | `set_emergency_mode`   | ✅ | ✅ | Mirrors the Market/Resolution coordinated mode (#662). |
-| `set_stakeholders`     | ✅ | ✅ | Share weights must sum to exactly 10,000 bps. |
-| `distribute_fees`      | ✅ | ✅ | |
+| `propose_stakeholders` / `execute_stakeholders` / `cancel_stakeholders` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked (#689) stakeholder revenue-share list. `propose_stakeholders` rejects an empty list or shares not summing to exactly 10,000 bps with `InvalidStakeholderWeights` (#721). Table entry was still named `set_stakeholders` (its pre-#689 name) until this pass — kept in sync now. |
+| `distribute_fees`      | ✅ | ✅ | Rejects with `NoStakeholdersConfigured` if `propose_stakeholders`/`execute_stakeholders` has never installed a list. **Fixed by #721**: the payout loop pushed each stakeholder's transfer onto the payout list twice, so every stakeholder was paid double the intended amount while the treasury's own ledger (`distributed`/`remaining`) only accounted for a single payment — found via the `test.rs`/`distribute_proptest.rs` fallout from the `set_stakeholders` → `propose_stakeholders` rename (#689), which had left those test files referencing a removed client method and unable to compile at all, masking the bug. |
 
 `collect_fee` requires auth from `caller` but intentionally checks
 *registered-market* membership (`is_authorized_market`) rather than admin
@@ -77,7 +77,7 @@ identity — it is a market-contract-facing entrypoint, not an admin mutator.
 | Entrypoint                     | require_auth | admin-equality check | Notes |
 |---------------------------------|:---:|:---:|-------|
 | `initialize`                   | ✅ | n/a (bootstraps admin) | |
-| `set_default_challenge_window`  | ✅ | ✅ (`require_admin`) | |
+| `set_default_challenge_window`  | ✅ | ✅ (`require_admin`) | **Reviewed for #723**: intentionally *not* timelocked, unlike the propose/execute families below. `challenge_window_secs` is advisory only — `propose`/`propose_v2`/`appeal` each take their own `challenge_window_seconds` argument (bounded by the fixed `MIN_CHALLENGE_WINDOW_SECONDS`/`MAX_CHALLENGE_WINDOW_SECONDS` constants) and store it immutably on the candidate at creation time; the default is never read by any of them. An instant admin change here cannot move an existing candidate's `challenge_deadline` or constrain a future proposer's chosen window, so it carries none of the "instant address/config change" risk the timelock pattern exists to prevent. See the doc comment on `set_default_challenge_window` in `lib.rs` and its regression tests in `test.rs`. |
 | `propose_factory` / `execute_factory` / `cancel_factory` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked (`ADDRESS_TIMELOCK_SECONDS`, 48h) factory rotation. **`propose_factory` and `cancel_factory` were calling `require_admin` (address equality) with no `admin.require_auth()` at all** — any caller could pass the real admin's address as the argument and pass the equality check without ever proving they hold that key, silently rotating the factory after the timelock. Fixed by this pass: both now call `admin.require_auth()` before the equality check, matching every other admin mutator in this file. |
 | `propose_market_contract` / `execute_market_contract` / `cancel_market_contract` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Same gap found and fixed in this pass: `propose_market_contract` and `cancel_market_contract` now call `admin.require_auth()`. |
 | `set_treasury`                  | ✅ | ✅ (`require_admin`) | Optional treasury recipient for the slashed-bond treasury cut. |

@@ -157,6 +157,11 @@ jobs:
           echo "WASM artifact size:"
           du -h target/wasm32v1-none/release/*.wasm
 
+      # #734: enabling `--features oracle-adapter` must not exceed the 64 KiB
+      # Soroban install/upgrade limit. Fails the job if the gap is reintroduced.
+      - name: Market wasm32 size budget (oracle-adapter)
+        run: bash scripts/check-market-wasm-size.sh
+
       # deploy.sh is a guard script that echoes deployment intent without
       # performing a real on-chain deployment. Running it in CI verifies the
       # script is executable and reachable, and serves as a placeholder for

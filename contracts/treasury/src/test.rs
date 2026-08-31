@@ -495,6 +495,90 @@ fn multiple_markets_can_each_collect_fees() {
     assert_eq!(s.client.get_cumulative_fees(&s.token), 300);
 }
 
+// ── propose_market_contract / execute_market_contract (timelocked, #720) ──────
+
+#[test]
+fn execute_market_contract_preserves_previously_added_markets() {
+    // Regression for #720: `execute_market_contract` used to overwrite the
+    // whole `AuthorizedMarkets` registry with a single-element vec, silently
+    // deregistering every market added via `add_market`. It must now append,
+    // just like `add_market` does, so the two entrypoints agree on one
+    // registry instead of drifting apart.
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    let market3 = Address::generate(&s.env);
+    s.client.add_market(&s.admin, &market2);
+
+    s.client.propose_market_contract(&s.admin, &market3);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_market_contract();
+
+    assert!(s.client.is_authorized_market(&s.market));
+    assert!(s.client.is_authorized_market(&market2));
+    assert!(s.client.is_authorized_market(&market3));
+    assert_eq!(s.client.list_markets().len(), 3);
+
+    // The originally-registered market must still be able to collect fees —
+    // this is the concrete symptom the drift caused: a live market silently
+    // losing `collect_fee` access with no `remove_market` call or event.
+    s.client.collect_fee(&s.market, &s.token, &1u32, &1_000i128);
+    assert_eq!(s.client.token_balance(&s.token), 1_000i128);
+}
+
+#[test]
+fn execute_market_contract_is_idempotent_for_already_authorized_market() {
+    let s = setup();
+    s.client.propose_market_contract(&s.admin, &s.market);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_market_contract();
+
+    assert_eq!(s.client.list_markets().len(), 1);
+    assert!(s.client.is_authorized_market(&s.market));
+}
+
+#[test]
+fn execute_market_contract_rejects_before_timelock_elapses() {
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    s.client.propose_market_contract(&s.admin, &market2);
+
+    let err = s.client.try_execute_market_contract().unwrap_err().unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert!(!s.client.is_authorized_market(&market2));
+}
+
+#[test]
+fn propose_market_contract_rejects_non_admin() {
+    let s = setup();
+    let rando = Address::generate(&s.env);
+    let market2 = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_propose_market_contract(&rando, &market2)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+}
+
+#[test]
+fn cancel_market_contract_clears_pending_change() {
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    s.client.propose_market_contract(&s.admin, &market2);
+    s.client.cancel_market_contract(&s.admin);
+
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    let err = s.client.try_execute_market_contract().unwrap_err().unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert!(!s.client.is_authorized_market(&market2));
+}
+
 // ── propose_admin / execute_admin (timelocked, #658) ───────────────────────────
 
 #[test]
@@ -651,6 +735,96 @@ fn unpause_rejects_non_admin() {
     assert_eq!(err, TreasuryError::Unauthorized);
 }
 
+// ── Emergency mode (#662, #722) ─────────────────────────────────────────────
+//
+// Regression for #722: `StorageKey::EmergencyMode` was referenced by
+// `get_emergency_mode`/`set_emergency_mode` but was never added as a variant
+// of the `StorageKey` enum, so the treasury crate has not compiled at all
+// since the emergency-mode feature was introduced (#662) -- these are the
+// first tests to exercise this path.
+
+#[test]
+fn emergency_mode_defaults_to_normal() {
+    let s = setup();
+    assert_eq!(s.client.get_emergency_mode(), storage::EmergencyMode::Normal);
+}
+
+#[test]
+fn set_emergency_mode_updates_stored_mode() {
+    let s = setup();
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::GlobalFreeze);
+    assert_eq!(s.client.get_emergency_mode(), storage::EmergencyMode::GlobalFreeze);
+}
+
+#[test]
+fn set_emergency_mode_rejects_non_admin() {
+    let s = setup();
+    let rando = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_set_emergency_mode(&rando, &storage::EmergencyMode::GlobalFreeze)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert_eq!(s.client.get_emergency_mode(), storage::EmergencyMode::Normal);
+}
+
+#[test]
+fn global_freeze_blocks_collect_fee_withdraw_and_distribute() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+
+    let stakeholder = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder, 10_000u32));
+    s.client.propose_stakeholders(&s.admin, &stakeholders);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_stakeholders();
+
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::GlobalFreeze);
+
+    let err = s
+        .client
+        .try_collect_fee(&s.market, &s.token, &2u32, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::EmergencyModeActive);
+
+    let recipient = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_withdraw_fees(&s.admin, &s.token, &recipient, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::EmergencyModeActive);
+
+    let err = s
+        .client
+        .try_distribute_fees(&s.admin, &s.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::EmergencyModeActive);
+}
+
+#[test]
+fn trading_halted_and_settle_only_still_allow_collect_fee() {
+    // Per the documented mode table, TradingHalted and SettleOnly only block
+    // GlobalFreeze-gated calls elsewhere (Market contract) -- on Treasury,
+    // collect_fee/withdraw_fees/distribute_fees are only blocked by
+    // GlobalFreeze.
+    let s = setup();
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::TradingHalted);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &100i128);
+    assert_eq!(s.client.token_balance(&s.token), 100);
+
+    s.client.set_emergency_mode(&s.admin, &storage::EmergencyMode::SettleOnly);
+    s.client.collect_fee(&s.market, &s.token, &2u32, &100i128);
+    assert_eq!(s.client.token_balance(&s.token), 200);
+}
+
 // ── #593: collect_fee pause gate ─────────────────────────────────────────────
 
 /// `collect_fee` must be blocked while the treasury is paused and must return
@@ -734,7 +908,7 @@ fn collect_fee_resumes_after_unpause() {
 // ── stakeholder fee distribution (#485) ───────────────────────────────────────
 
 #[test]
-fn set_stakeholders_rejects_weights_not_summing_to_10000() {
+fn propose_stakeholders_rejects_weights_not_summing_to_10000() {
     let s = setup();
     let a = Address::generate(&s.env);
     let b = Address::generate(&s.env);
@@ -744,14 +918,31 @@ fn set_stakeholders_rejects_weights_not_summing_to_10000() {
 
     let err = s
         .client
-        .try_set_stakeholders(&s.admin, &stakeholders)
+        .try_propose_stakeholders(&s.admin, &stakeholders)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::InvalidStakeholderWeights);
+}
+
+/// Regression for #721: an empty stakeholder list must be rejected at
+/// `propose_stakeholders` with a typed error, not silently accepted (which
+/// would let `execute_stakeholders` install an empty list and leave
+/// `distribute_fees` to reject later, or worse, not reject at all).
+#[test]
+fn propose_stakeholders_rejects_empty_list() {
+    let s = setup();
+    let empty: soroban_sdk::Vec<(Address, u32)> = soroban_sdk::Vec::new(&s.env);
+
+    let err = s
+        .client
+        .try_propose_stakeholders(&s.admin, &empty)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, TreasuryError::InvalidStakeholderWeights);
 }
 
 #[test]
-fn set_stakeholders_rejects_non_admin() {
+fn propose_stakeholders_rejects_non_admin() {
     let s = setup();
     let rando = Address::generate(&s.env);
     let a = Address::generate(&s.env);
@@ -760,10 +951,18 @@ fn set_stakeholders_rejects_non_admin() {
 
     let err = s
         .client
-        .try_set_stakeholders(&rando, &stakeholders)
+        .try_propose_stakeholders(&rando, &stakeholders)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, TreasuryError::Unauthorized);
+}
+
+fn propose_and_execute_stakeholders(s: &Setup, stakeholders: &soroban_sdk::Vec<(Address, u32)>) {
+    s.client.propose_stakeholders(&s.admin, stakeholders);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_stakeholders();
 }
 
 #[test]
@@ -777,7 +976,7 @@ fn distribute_fees_pays_out_by_share() {
     let mut stakeholders = soroban_sdk::Vec::new(&s.env);
     stakeholders.push_back((stakeholder_a.clone(), 7_000u32));
     stakeholders.push_back((stakeholder_b.clone(), 3_000u32));
-    s.client.set_stakeholders(&s.admin, &stakeholders);
+    propose_and_execute_stakeholders(&s, &stakeholders);
 
     s.client.distribute_fees(&s.admin, &s.token);
 
@@ -786,6 +985,34 @@ fn distribute_fees_pays_out_by_share() {
     assert_eq!(s.client.token_balance(&s.token), 0);
     // Cumulative fees stay monotone — distribution only moves the live balance.
     assert_eq!(s.client.get_cumulative_fees(&s.token), 1_000_000);
+}
+
+/// Regression for #721: the payout loop used to push each stakeholder onto
+/// the transfer list twice, doubling every real token transfer while the
+/// treasury's own ledger (`distributed`/`remaining`) accounted for only one
+/// payment. A single-stakeholder, 100%-share distribution makes the bug
+/// unmistakable: with the bug, the second `token_client.transfer` for the
+/// same stakeholder would attempt to move funds already fully paid out
+/// (panicking on insufficient real balance once the treasury's actual token
+/// balance is exhausted), and any surviving distribution would leave the
+/// stakeholder short by exactly what they were shorted elsewhere or would
+/// double what they're due — either way, the exact-value assertion below
+/// only holds without the bug.
+#[test]
+fn distribute_fees_pays_exact_share_not_double() {
+    let s = setup();
+    fund_treasury(&s, 250_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &250_000i128);
+
+    let stakeholder = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder.clone(), 10_000u32));
+    propose_and_execute_stakeholders(&s, &stakeholders);
+
+    s.client.distribute_fees(&s.admin, &s.token);
+
+    assert_eq!(TokenClient::new(&s.env, &s.token).balance(&stakeholder), 250_000);
+    assert_eq!(s.client.token_balance(&s.token), 0);
 }
 
 #[test]
@@ -800,6 +1027,8 @@ fn distribute_fees_rejects_without_stakeholders_configured() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, TreasuryError::NoStakeholdersConfigured);
+    // A rejected distribution must move no funds.
+    assert_eq!(s.client.token_balance(&s.token), 500_000);
 }
 
 #[test]
@@ -808,7 +1037,7 @@ fn distribute_fees_rejects_zero_balance() {
     let stakeholder = Address::generate(&s.env);
     let mut stakeholders = soroban_sdk::Vec::new(&s.env);
     stakeholders.push_back((stakeholder, 10_000u32));
-    s.client.set_stakeholders(&s.admin, &stakeholders);
+    propose_and_execute_stakeholders(&s, &stakeholders);
 
     let err = s
         .client
@@ -826,7 +1055,7 @@ fn distribute_fees_rejects_non_admin() {
     let stakeholder = Address::generate(&s.env);
     let mut stakeholders = soroban_sdk::Vec::new(&s.env);
     stakeholders.push_back((stakeholder, 10_000u32));
-    s.client.set_stakeholders(&s.admin, &stakeholders);
+    propose_and_execute_stakeholders(&s, &stakeholders);
 
     let rando = Address::generate(&s.env);
     let err = s
@@ -845,7 +1074,7 @@ fn distribute_fees_blocked_while_paused() {
     let stakeholder = Address::generate(&s.env);
     let mut stakeholders = soroban_sdk::Vec::new(&s.env);
     stakeholders.push_back((stakeholder, 10_000u32));
-    s.client.set_stakeholders(&s.admin, &stakeholders);
+    propose_and_execute_stakeholders(&s, &stakeholders);
 
     s.client.pause(&s.admin);
     let err = s

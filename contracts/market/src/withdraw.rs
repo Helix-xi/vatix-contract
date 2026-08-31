@@ -196,11 +196,9 @@ pub fn withdraw_unused_collateral(
         }
     }
 
-    // 9. Transfer the requested amount to the user
-    token_client.transfer(&contract_address, &user, &amount);
-
-  
-    // 9. Transfer the requested amount to the user.
+    // 9. Transfer the requested amount to the user (single external payout —
+    //    a prior bad merge left this `transfer` call duplicated, which would
+    //    double-pay the user and drain the contract's collateral balance).
     token_client.transfer(&contract_address, &user, &amount);
 
     emit_collateral_withdrawn(&env, &user, market_id, amount, position.total_deposited);
@@ -652,6 +650,126 @@ mod tests {
         assert!(
             !has_retained_event,
             "FeeRetainedNoTreasury must not fire when a treasury is registered"
+        );
+    }
+
+    /// #711: when the withdraw fee path invokes the treasury's `collect_fee`,
+    /// the treasury's canonical `fee_collected` event must be emitted with the
+    /// `market_id` topic and a `fee_amount` matching what the user was
+    /// actually charged. Guards the indexer-facing event schema against a
+    /// regression where the fee is transferred but no matching event fires.
+    #[test]
+    fn test_withdraw_emits_fee_collected_from_treasury_path() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::{IntoVal, Map, Symbol, TryIntoVal, Val};
+        use vatix_treasury_contract::{TreasuryContract, TreasuryContractClient};
+
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let position = Position {
+            market_id,
+            user: user.clone(),
+            yes_shares: 0,
+            no_shares: 0,
+            locked_collateral: 0,
+            total_deposited: 100,
+            is_settled: false,
+        };
+        let admin = Address::generate(&env);
+        let treasury_addr = env.register(TreasuryContract, ());
+        TreasuryContractClient::new(&env, &treasury_addr).initialize(&admin, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+            storage::set_fee_rate_bps(&env, 1_000); // 10%
+            storage::set_treasury(&env, &treasury_addr);
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &200);
+
+        env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, 40).unwrap();
+        });
+
+        // Locate the treasury's `fee_collected` event among everything emitted
+        // during the withdraw (it is not the last event).
+        let events = env.events().all();
+        let fee_collected = events.iter().find(|(_, topics, _)| {
+            let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
+            topic0 == Symbol::new(&env, "fee_collected")
+        });
+        let (_, topics, data) = fee_collected.expect("fee_collected event must be emitted");
+
+        let mid: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(mid, market_id, "fee_collected must carry the market_id topic");
+
+        let data: Map<Symbol, Val> = data.clone().try_into_val(&env).unwrap();
+        let fee_amount: i128 = data
+            .get(Symbol::new(&env, "fee_amount"))
+            .unwrap()
+            .into_val(&env);
+        assert_eq!(fee_amount, 4, "fee_amount must match the 10% fee on a 40 withdraw");
+    }
+
+    /// #711: a zero-fee (or fee-waived) withdraw must not invoke `collect_fee`
+    /// at all — no `fee_collected` event, no misleading `amount = 0`.
+    #[test]
+    fn test_withdraw_zero_fee_emits_no_fee_collected() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::{IntoVal, Symbol};
+        use vatix_treasury_contract::{TreasuryContract, TreasuryContractClient};
+
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let position = Position {
+            market_id,
+            user: user.clone(),
+            yes_shares: 0,
+            no_shares: 0,
+            locked_collateral: 0,
+            total_deposited: 100,
+            is_settled: false,
+        };
+        let admin = Address::generate(&env);
+        let treasury_addr = env.register(TreasuryContract, ());
+        TreasuryContractClient::new(&env, &treasury_addr).initialize(&admin, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+            storage::set_fee_rate_bps(&env, 0); // no fee
+            storage::set_treasury(&env, &treasury_addr);
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &200);
+
+        env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, 40).unwrap();
+        });
+
+        let events = env.events().all();
+        let emitted_fee_collected = events.iter().any(|(_, topics, _)| {
+            let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
+            topic0 == Symbol::new(&env, "fee_collected")
+        });
+        assert!(
+            !emitted_fee_collected,
+            "a zero-fee withdraw must not emit fee_collected"
         );
     }
 

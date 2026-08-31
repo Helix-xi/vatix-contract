@@ -491,6 +491,78 @@ fn set_default_challenge_window_rejects_out_of_bounds() {
     );
 }
 
+/// Regression for #723: `set_default_challenge_window` is an instant,
+/// non-timelocked admin mutator by design (see its doc comment in `lib.rs`)
+/// because it has no on-chain binding effect on any candidate, past or
+/// future -- `propose`/`propose_v2`/`appeal` each take their own
+/// independently-validated `challenge_window_seconds` argument and store it
+/// directly on the candidate at creation time. This proves the "no
+/// retroactive effect" half of that claim: shrinking the default after a
+/// candidate is proposed must not move that candidate's already-computed
+/// `challenge_deadline`.
+#[test]
+fn shrinking_default_does_not_move_existing_candidate_deadline() {
+    let env = Env::default();
+    let (client, admin, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let proposed_window = 10_000u64;
+    let candidate_id = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + proposed_window + 3600),
+        &evidence(&env),
+        &proposed_window,
+        &BOND,
+    );
+    let deadline_before = client.get_candidate(&candidate_id).unwrap().challenge_deadline;
+
+    // Shrink the default to its minimum -- if this had any binding effect on
+    // live candidates, the deadline read below would move.
+    client.set_default_challenge_window(&admin, &60);
+
+    let deadline_after = client.get_candidate(&candidate_id).unwrap().challenge_deadline;
+    assert_eq!(deadline_before, deadline_after);
+}
+
+/// Regression for #723, other half: shrinking the default must not clamp or
+/// otherwise constrain the window a *future* `propose` call may choose --
+/// the default is advisory only, and the only enforced bounds are the fixed
+/// `MIN_CHALLENGE_WINDOW_SECONDS`/`MAX_CHALLENGE_WINDOW_SECONDS` constants
+/// applied to the caller's own argument.
+#[test]
+fn shrinking_default_does_not_constrain_a_new_proposals_chosen_window() {
+    let env = Env::default();
+    let (client, admin, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    client.set_default_challenge_window(&admin, &60);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let chosen_window = 14 * 24 * 60 * 60u64; // MAX, far above the shrunk default
+    let candidate_id = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + chosen_window + 3600),
+        &evidence(&env),
+        &chosen_window,
+        &BOND,
+    );
+
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    assert_eq!(
+        candidate.challenge_deadline,
+        candidate.proposed_at + chosen_window
+    );
+}
+
 // ── Issue #552: challenge_window boundary tests at propose ─────────────────────
 //
 // Constants (from lib.rs):
