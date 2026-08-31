@@ -59,6 +59,17 @@ events additionally carry a `version: u32 (topic)` field
 | `fee_waiver_removed` | `account: Address (topic)`, `admin: Address`, `removed_at: u64` | The admin removes an address from the fee waiver list |
 | `position_token_mismatch_detected` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `yes_shares: i128`, `no_shares: i128`, `yes_token_balance: i128`, `no_token_balance: i128` | The reconciliation guard finds a user's `Position` shares and `OutcomeToken` balances have diverged (raised before `update_position`/`settle_position` reject) |
 | `position_tokens_reconciled` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `admin: Address`, `yes_delta_applied: i128`, `no_delta_applied: i128`, `reconciled_at: u64` | An admin repairs a Position/OutcomeToken divergence via `reconcile_position_tokens` (deltas are the signed mint/burn applied to the OutcomeToken balance) |
+| `market_reopened` | `version: u32 (topic)`, `market_id: u32 (topic)`, `admin: Address`, `reopened_at: u64` | An admin explicitly reopens a previously-canceled market back to `Active` via `reopen_market` |
+| `large_withdraw` | `version: u32 (topic)`, `user: Address (topic)`, `market_id: u32 (topic)`, `amount: i128`, `timestamp: u64` | A withdrawal reaches the large-withdraw audit threshold — emitted alongside the normal `collateral_withdrawn` event so operators can flag unusual outflows |
+| `fee_retained_no_treasury` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `fee_amount: i128` | A non-zero withdrawal fee is retained in the market contract's own balance because no treasury address is registered (treasury-optional path) |
+| `admin_transfer_canceled` | `version: u32 (topic)`, `current_admin: Address (topic)`, `canceled_pending_admin: Address (topic)`, `canceled_at: u64` | The current admin cancels a pending admin-transfer proposal before it is accepted |
+| `treasury_proposed` | `version: u32 (topic)`, `treasury: Address`, `effective_at: u64` | The market admin proposes registering a new Treasury contract address, subject to a timelock |
+| `outcome_token_proposed` | `version: u32 (topic)`, `outcome_token: Address`, `effective_at: u64` | The market admin proposes registering a new Outcome Token contract address, subject to a timelock |
+| `outcome_token_set` | `version: u32 (topic)`, `outcome_token: Address`, `set_at: u64` | A previously-proposed Outcome Token contract address takes effect after its timelock |
+| `resolution_proposed` | `version: u32 (topic)`, `resolution: Address`, `effective_at: u64` | The market admin proposes registering a new Resolution contract address, subject to a timelock |
+| `resolution_set` | `version: u32 (topic)`, `resolution: Address`, `set_at: u64` | A previously-proposed Resolution contract address takes effect after its timelock |
+| `market_oracle_proposed` | `market_id: u32 (topic)`, `admin: Address`, `old_oracle_pubkey: BytesN<32>`, `new_oracle_pubkey: BytesN<32>`, `effective_at: u64` | The admin proposes rotating a market's oracle public key (timelocked before taking effect) |
+| `emergency_mode_changed` | `version: u32 (topic)`, `new_mode: EmergencyMode (topic)`, `admin: Address`, `changed_at: u64` | The coordinated emergency mode is changed on the Market contract (`set_emergency_mode`) |
 
 ## Treasury (`contracts/treasury/src/events.rs`)
 
@@ -75,6 +86,11 @@ events additionally carry a `version: u32 (topic)` field
 | `fees_distributed` | `token: Address (topic)`, `distributed_amount: i128`, `remaining_token_balance: i128`, `stakeholder_count: u32`, `distributed_at: u64` | Fees for `token` are distributed across all configured stakeholders (once per `distribute_fees` call) |
 | `treasury_paused` | `admin: Address (topic)`, `paused_at: u64` | The Treasury is paused for emergency maintenance |
 | `treasury_unpaused` | `admin: Address (topic)`, `unpaused_at: u64` | The Treasury is unpaused |
+| `admin_transfer_proposed` | `old_admin: Address (topic)`, `new_admin: Address (topic)`, `effective_at: u64` | The Treasury admin proposes transferring the admin role (timelocked before taking effect) |
+| `stakeholders_proposed` | `stakeholders: Vec<Address>`, `shares_bps: Vec<u32>`, `effective_at: u64` | The admin proposes a new stakeholder revenue-share list, with per-entry `(stakeholder, share_bps)` payload, subject to a timelock |
+| `market_contract_proposed` | `new_market_contract: Address (topic)`, `effective_at: u64` | The Treasury admin proposes rotating the registered market contract address (timelocked) |
+| `market_contract_set` | `new_market_contract: Address (topic)`, `set_at: u64` | A previously-proposed market contract address takes effect after its timelock on the Treasury |
+| `emergency_mode_changed` | `new_mode: EmergencyMode (topic)`, `admin: Address`, `changed_at: u64` | The coordinated emergency mode is changed on the Treasury contract (`set_emergency_mode`). The emitted topic is `treasury_emergency_mode_changed` (struct name: `TreasuryEmergencyModeChanged`) |
 
 ## Resolution (`contracts/resolution/src/events.rs`)
 
@@ -87,6 +103,15 @@ events additionally carry a `version: u32 (topic)` field
 | `candidate_appealed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `proposer: Address`, `appeal_round: u32`, `evidence_uri: String`, `challenge_deadline: u64`, `appealed_at: u64` | A challenged candidate is re-proposed/appealed for another round. V1-only (`appeal` rejects a V2-proposed candidate, #701) |
 | `emergency_mode_changed` | `new_mode: EmergencyMode (topic)`, `admin: Address`, `changed_at: u64` | Admin changes the mirrored emergency mode (`set_emergency_mode`), coordinated with the Market and Treasury contracts (#662, wired up for resolution by #701) |
 | `market_voided` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `voided_at: u64` | Resolution `void_market` runs: the proposer's bond is split/slashed, challengers are refunded, and the market contract's `void_market` is invoked to move the market to `Canceled` (Issue #708). The market contract emits its own `market_voided` for the status transition. |
+| `bond_slashed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `loser: Address`, `winner: Address`, `total: i128`, `reward: i128`, `burned: i128`, `treasury_cut: i128`, `slashed_at: u64` | A bond is forfeited and split: `reward` goes to the winning party, `burned` is removed from supply, `treasury_cut` goes to the configured treasury. Emitted by `finalize`, `arbitrate_uphold_proposer`, and `void_market` (per challenger in `settle_challengers_as_losers`, and for the proposer in `void_market`) |
+| `bond_refunded` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `recipient: Address`, `amount: i128`, `refunded_at: u64` | A bond is refunded in full (no fault) — e.g. every recorded challenger's bond when a market is voided |
+| `candidate_arbitrated` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `arbitrated_at: u64` | Admin arbitration upheld the proposer's disputed outcome after `MAX_APPEAL_ROUNDS` were exhausted (`arbitrate_uphold_proposer`) — distinct from `candidate_finalized` (normal finalization) |
+| `factory_proposed` | `factory: Address (topic)`, `effective_at: u64` | Admin proposes rotating the factory address (timelocked before taking effect) |
+| `factory_set` | `factory: Address (topic)`, `set_at: u64` | A previously-proposed factory address takes effect after its timelock |
+| `market_contract_proposed` | `market_contract: Address (topic)`, `effective_at: u64` | Admin proposes rotating the market contract address on the Resolution contract (timelocked) |
+| `market_contract_set` | `market_contract: Address (topic)`, `set_at: u64` | A previously-proposed market contract address takes effect after its timelock on the Resolution contract |
+| `treasury_proposed` | `treasury: Address (topic)`, `effective_at: u64` | Admin proposes a new treasury address for the slashed-bond treasury cut on the Resolution contract (timelocked) |
+| `treasury_set` | `treasury: Address (topic)`, `set_at: u64` | A previously-proposed treasury address takes effect after its timelock on the Resolution contract |
 
 ### Resolution ABI notes for off-chain indexers
 
