@@ -334,7 +334,10 @@ pub fn set_total_locked_collateral(env: &Env, user: &Address, locked: i128) {
         .set(&StorageKey::TotalLockedCollateral(user.clone()), &locked);
 }
 
-// --- Market Participants (Issue #495) ---
+// --- Market Participants (Issue #495 / Issue #768) ---
+
+/// Maximum allowed participants per market to bound storage and execution limits (#768).
+pub const MAX_MARKET_PARTICIPANTS: u32 = 1000;
 
 /// Return the ordered list of every address that has ever held a position
 /// in `market_id`. Empty if the market has no positions yet.
@@ -345,15 +348,18 @@ pub fn get_market_participants(env: &Env, market_id: u32) -> Vec<Address> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
-/// Record `user` as a participant of `market_id` if not already tracked.
+/// Record `user` as a participant of `market_id` if not already tracked and
+/// under the storage limit (`MAX_MARKET_PARTICIPANTS`).
 /// Idempotent — safe to call on every position update.
 pub fn add_market_participant(env: &Env, market_id: u32, user: &Address) {
     let mut participants = get_market_participants(env, market_id);
     if !participants.iter().any(|p| &p == user) {
-        participants.push_back(user.clone());
-        env.storage()
-            .persistent()
-            .set(&StorageKey::MarketParticipants(market_id), &participants);
+        if participants.len() < MAX_MARKET_PARTICIPANTS {
+            participants.push_back(user.clone());
+            env.storage()
+                .persistent()
+                .set(&StorageKey::MarketParticipants(market_id), &participants);
+        }
     }
 }
 
@@ -638,6 +644,8 @@ pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, 
 /// Returns `None` when the admin has not configured an adapter for this
 /// market yet — callers should fall back to Ed25519 verification rather than
 /// treating this as an error (see `oracle::verify_market_outcome`).
+/// Only available when the `oracle-adapter` feature is compiled in (#778).
+#[cfg(feature = "oracle-adapter")]
 pub fn get_market_adapter_config(
     env: &Env,
     market_id: u32,
@@ -649,6 +657,8 @@ pub fn get_market_adapter_config(
 
 /// Set (or replace) the Reflector/Pyth adapter config for `market_id`
 /// (admin-gated in `lib.rs`).
+/// Only available when the `oracle-adapter` feature is compiled in (#778).
+#[cfg(feature = "oracle-adapter")]
 pub fn set_market_adapter_config(
     env: &Env,
     market_id: u32,
@@ -801,6 +811,26 @@ pub fn get_all_market_ids(env: &Env) -> Vec<u32> {
         .persistent()
         .get(&StorageKey::MarketIds)
         .unwrap_or_else(|| Vec::new(env))
+}
+
+// --- Oracle Adapter Support ---
+// CRITICAL: When oracle adapters are enabled (non-empty), Ed25519 fallback MUST be disabled.
+// This enforces a fail-closed security model. See ADR-002 in docs/.
+
+/// Check if any oracle adapters are registered.
+/// If true, Ed25519 signature verification should not be used as fallback.
+pub fn has_oracle_adapters(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .has(&StorageKey::OracleAdapters)
+}
+
+/// Register that oracle adapters are enabled for this market contract.
+/// This disables Ed25519 fallback (fail-closed).
+pub fn enable_oracle_adapters(env: &Env) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OracleAdapters, &true);
 }
 
 #[cfg(test)]

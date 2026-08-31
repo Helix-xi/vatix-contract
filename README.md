@@ -92,13 +92,15 @@ The Market contract uses storage versioning to ensure data integrity across upgr
 
 🚧 **Early Stage** - Contract architecture and specifications in progress -->
 
-## Planned Functionality
+## Current Status
 
-- Binary outcome markets (Yes/No)
-- Share minting and trading
-- Oracle-based resolution
-- Fee distribution
-- Market expiration and settlement
+| Area | Status | Notes |
+| --- | --- | --- |
+| Binary outcome markets | Complete | Yes/No market creation and lifecycle logic are implemented in the market contract. |
+| Share minting and trading | In progress | Core contract flows are in place, with continued validation and integration work. |
+| Oracle-based resolution | Complete | Ed25519 verification and fail-closed adapter protection are implemented. |
+| Fee distribution | Planned | Treasury routing and fee accounting still need fuller implementation. |
+| Market expiration and settlement | In progress | Settlement flows are defined and exercised in tests, with further hardening underway. |
 
 ## Recent Features
 
@@ -510,6 +512,15 @@ fn my_function() { ... }
 ```
 
 The CI step is defined in `.github/workflows/ci.yml` and runs automatically on every push and pull request.
+
+## Property Test Snapshots Policy (#766)
+
+Property test snapshots and regression seeds (`test_snapshots/`, `property_locked_collateral*`) are uncommitted by default per `.gitignore` rules to keep the repository clean.
+To regenerate or run property test invariants locally:
+
+```bash
+cargo test --test proptest_locked_invariant
+```
 
 ## Security
 

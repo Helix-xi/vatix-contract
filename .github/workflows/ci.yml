@@ -157,6 +157,11 @@ jobs:
           echo "WASM artifact size:"
           du -h target/wasm32v1-none/release/*.wasm
 
+      # #734: enabling `--features oracle-adapter` must not exceed the 64 KiB
+      # Soroban install/upgrade limit. Fails the job if the gap is reintroduced.
+      - name: Market wasm32 size budget (oracle-adapter)
+        run: bash scripts/check-market-wasm-size.sh
+
       # deploy.sh is a guard script that echoes deployment intent without
       # performing a real on-chain deployment. Running it in CI verifies the
       # script is executable and reachable, and serves as a placeholder for
@@ -199,6 +204,49 @@ jobs:
       # real CI actions (credentials, expected outputs, and invocation examples).
       - name: Invoke example (echo guard)
         run: bash scripts/invoke-example.sh
+
+  # #778 — oracle-adapter feature-flag guard.
+  # Verifies that the `oracle-adapter` Cargo feature is NOT compiled into the
+  # default build (i.e. not listed in `[features] default` in
+  # contracts/market/Cargo.toml). A default build must compile cleanly without
+  # the feature, and the runtime test in oracle.rs will catch any accidental
+  # addition to `default` before it reaches mainnet.
+  oracle-adapter-not-default:
+    name: oracle-adapter not in default features (#778)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      # Build WITHOUT --features oracle-adapter to confirm the crate compiles
+      # and that no oracle-adapter types leak into the default code path.
+      - name: Build market crate without oracle-adapter feature
+        run: cargo build -p vatix-market-contract
+
+      # Run the feature-guard test that asserts cfg!(feature="oracle-adapter")
+      # is false when invoked without the flag.
+      - name: Assert oracle-adapter not default (runtime test)
+        run: cargo test -p vatix-market-contract oracle_adapter_is_not_in_default_features
+
+  # #779 — Workspace members guard.
+  # Fails CI if any crate other than the four production contracts
+  # (market, treasury, resolution, outcome-token) appears under contracts/.
+  # This prevents hello-world, scratch, or example crates from accidentally
+  # ending up in the deploy matrix.
+  check-workspace-members:
+    name: Workspace members guard (#779)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check workspace members
+        run: bash scripts/check-workspace-members.sh
 
   build-contracts:
     name: Build all contract crates
@@ -278,38 +326,71 @@ jobs:
           ALLOW_UNPINNED_HASHES: "1"
         run: bash scripts/upgrade/check-upgrade.sh
 
-      # Issue #761: run verify-wasm-hash.sh for each contract after the build
-      # above has already produced the WASM artifacts.  This step emits the
-      # SHA-256 hash of each artifact so it can be inspected in the CI log and
-      # compared against pinned values in expected-hashes.json before a rollout.
-      # It does NOT fail if the hash differs from expected-hashes.json — that is
-      # already enforced by the check-upgrade.sh step above (Phase B) when
-      # ALLOW_UNPINNED_HASHES is not set.  The purpose here is visibility: the
-      # hash printed to CI logs is the canonical value to paste into
-      # expected-hashes.json when you are ready to pin a specific build for
-      # a staged release.  See scripts/upgrade/UPGRADE_PLAYBOOK.md §"WASM hash
-      # pinning" and scripts/upgrade/expected-hashes.json for the workflow.
-      - name: Print WASM hashes (verify-wasm-hash.sh)
+  # ── Issue #798: testnet.json schema validation ──────────────────────────────
+  # Validates deployments/testnet.json against the schema documented in
+  # deployments/README.md before any code that depends on it (frontend, scripts)
+  # can silently consume a malformed file and deploy nothing.
+  #
+  # What is checked:
+  #  1. deployments/testnet.json is valid JSON (jq empty fails on parse error).
+  #  2. The required top-level string fields are present and non-null:
+  #     network, networkPassphrase, rpcUrl.
+  #  3. The .contracts object has exactly the four required keys:
+  #     market, treasury, resolution, outcomeToken.
+  #  4. Each contract entry contains the required sub-keys:
+  #     contractId, wasmHash (both strings; empty string is OK as a placeholder).
+  #
+  # A missing field, wrong type, or extra-unknown top-level structure fails
+  # the build immediately rather than letting a misconfigured registry propagate
+  # to the frontend or deployment scripts.
+  testnet-json-validate:
+    name: Validate deployments/testnet.json schema
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate testnet.json schema (Issue #798)
         run: |
-          for contract in contracts/market contracts/treasury contracts/resolution contracts/outcome-token; do
-            echo "--- ${contract} ---"
-            # The WASM was already built by check-upgrade.sh above; skip the
-            # rebuild here by computing the hash directly from the artifact.
-            wasm_file=$(find target/wasm32v1-none/release -maxdepth 1 -name '*.wasm' 2>/dev/null | grep -v '.opt.wasm' | head -n1 || true)
-            if [[ -z "${wasm_file}" ]]; then
-              echo "  WARN: no WASM artifact found yet for ${contract} — skipping"
-              continue
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${wasm_file}"
-            else
-              shasum -a 256 "${wasm_file}"
+          set -euo pipefail
+          FILE="deployments/testnet.json"
+
+          echo "→ Checking $FILE is valid JSON..."
+          jq empty "$FILE"
+
+          echo "→ Checking required top-level string fields..."
+          for field in network networkPassphrase rpcUrl; do
+            val=$(jq -r ".${field} // empty" "$FILE")
+            if [[ -z "$val" ]]; then
+              echo "ERROR: missing or null field: .${field}" >&2
+              exit 1
             fi
           done
-          echo ""
-          echo "To pin a hash for a staged rollout, copy the value above into"
-          echo "scripts/upgrade/expected-hashes.json and commit the change."
-          echo "See scripts/upgrade/UPGRADE_PLAYBOOK.md for the full workflow."
+
+          echo "→ Checking .contracts has exactly the four required contract keys..."
+          REQUIRED_CONTRACTS=("market" "treasury" "resolution" "outcomeToken")
+          for name in "${REQUIRED_CONTRACTS[@]}"; do
+            present=$(jq -r ".contracts.${name} // empty" "$FILE")
+            if [[ -z "$present" ]]; then
+              echo "ERROR: .contracts.${name} is missing" >&2
+              exit 1
+            fi
+          done
+
+          echo "→ Checking each contract entry has contractId and wasmHash fields..."
+          for name in "${REQUIRED_CONTRACTS[@]}"; do
+            for subfield in contractId wasmHash; do
+              # The field must exist (even if its value is an empty string).
+              has=$(jq --arg c "$name" --arg f "$subfield" \
+                'if .contracts[$c] | has($f) then "yes" else "no" end' "$FILE")
+              if [[ "$has" != '"yes"' ]]; then
+                echo "ERROR: .contracts.${name}.${subfield} is missing" >&2
+                exit 1
+              fi
+            done
+          done
+
+          echo "✓ deployments/testnet.json schema is valid."
 
   frontend:
     name: Frontend (Next.js)

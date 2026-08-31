@@ -86,6 +86,17 @@ Resolution redeployment `Market::set_resolution_contract` must be pointed at
 the new address in the same window — otherwise a stuck disputed market cannot
 be voided.
 
+**`Market::cancel_market` / `Market::reopen_market`.** These are pure
+admin-to-market status transitions with no cross-contract wiring
+dependencies. `cancel_market` moves `Active → Canceled`; `reopen_market`
+moves `Canceled → Active` (the **only** sanctioned reverse path). Both
+require `admin.require_auth()` and an equality check against the stored admin
+(see `AUTH_TABLE.md`). Neither entrypoint makes an external call or reads
+any contract address from storage — they are not affected by deploy order or
+re-wiring and require no special handling in this playbook beyond the normal
+admin-key handoff when rotating the admin via `propose_admin` /
+`accept_admin`.
+
 ## WASM hash pinning
 
 [`scripts/verify-wasm-hash.sh`](../verify-wasm-hash.sh) computes the
@@ -146,6 +157,16 @@ new `<name>StorageVersion` alongside the others it's compatible with, in
 the same PR — exactly like the existing `STORAGE_MIGRATION_GUIDE.md`
 "Version History" convention.
 
+**Issues #752–#755 (Resolution audit additions):** These changes add
+`get_factory()`, `get_market_contract()`, and `get_admin()` read-only
+view getters to the Resolution contract; make `MIN_BOND_AMOUNT` /
+`MIN_CHALLENGE_BOND_AMOUNT` constants `pub` for test visibility; and add
+regression tests. **No storage layout change — `STORAGE_VERSION` stays
+at `1`** and the `version-matrix.json` entry is unaffected. The new
+getters are purely additive to the ABI; no existing callers need
+updating. The `expected-hashes.json` WASM hash for the Resolution contract
+must be updated after the next deployment with these changes.
+
 ## Dual-read migration for the next storage bump
 
 The next time market or treasury's `STORAGE_VERSION` needs to move forward
@@ -179,12 +200,27 @@ The `upgrade-dry-run` job in
 `check-upgrade.sh` on every push/PR with the full toolchain available
 (Rust + Stellar CLI), so:
 
-- Storage-version drift between source and `version-matrix.json` fails CI.
-- A pinned WASM hash that doesn't match the freshly built artifact fails CI.
-- The `UpgradeRequired` regression tests for all four contracts (market,
-  treasury, resolution, outcome-token — see #696) run as part of the same
-  job, so a change that accidentally removes a version guard (see "Pitfall
-  2" in `STORAGE_MIGRATION_GUIDE.md`) fails CI too.
+- **Phase A — Storage-version drift** (`check_version_drift`): checks all
+  four contracts — `market`, `treasury`, `resolution`, and `outcomeToken`
+  — by comparing the `STORAGE_VERSION` constant in each contract's
+  `storage.rs` against the recorded value in `version-matrix.json`. Fails
+  on any mismatch. As of Issue #696, Resolution and Outcome Token carry
+  their own `STORAGE_VERSION` constant and are fully included in this check
+  on equal footing with Market and Treasury. Closes Issue #800.
+
+- **Phase B — WASM hash verification**: builds each contract via
+  `stellar contract build` and compares against `expected-hashes.json`.
+  An unpinned hash is a warning; a pinned-but-mismatched hash is a failure.
+
+- **Phase C — UpgradeRequired regression tests**: runs the version-guard
+  unit tests for all four contracts (`vatix-market-contract`,
+  `vatix-treasury-contract`, `vatix-resolution-contract`,
+  `vatix-outcome-token-contract`) so a change that accidentally removes a
+  `storage::assert_version` guard fails CI immediately.
+
+In summary: storage-version drift between source and `version-matrix.json`
+fails CI. A pinned WASM hash that doesn't match the freshly built artifact
+fails CI. Removing a version guard from any of the four contracts fails CI.
 
 ### WASM hash pinning workflow (issue #761)
 

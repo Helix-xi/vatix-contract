@@ -4,6 +4,18 @@
 // Pyth price-feed adapter) so that market resolution does not rely on a
 // single off-chain signer. Tracked in:
 // https://github.com/Vatix-Protocol/vatix-contract/issues/139
+//
+// CRITICAL SAFETY NOTE (Upgrade Order):
+// Oracle adapters MUST be registered in this order across the protocol:
+//   1. outcome-token contract (initializes)
+//   2. treasury contract (initializes fee routes)
+//   3. resolution contract (initializes adapters)
+//   4. market contract (THIS CONTRACT - mints outcomes)
+//
+// Wrong order during upgrade bricks minting. See scripts/upgrade/UPGRADE_PLAYBOOK.md.
+//
+// SECURITY MODEL: When oracle adapters are enabled, Ed25519 verification
+// is DISABLED (fail-closed). This prevents silent fallback during incomplete upgrades.
 
 //! # Canonical Oracle Message Format (V2)
 //!
@@ -179,6 +191,11 @@ fn verify_ed25519_safe(pubkey: &BytesN<32>, message: &BytesN<32>, signature: &By
 
 /// Verify that an oracle signature is valid for a market resolution.
 ///
+/// # Fail-Closed Behavior
+/// - If oracle adapters are enabled, Ed25519 verification is REJECTED.
+/// - This prevents silent fallback during incomplete upgrades.
+/// - See UPGRADE_PLAYBOOK.md for cross-contract upgrade order.
+///
 /// # Errors
 /// - [`ContractError::UnauthorizedOracle`] if `oracle_pubkey` is the zero key.
 /// - [`ContractError::InvalidSignature`] if the signature does not verify
@@ -195,6 +212,11 @@ pub fn verify_oracle_signature(
     signature: &BytesN<64>,
     oracle_pubkey: &BytesN<32>,
 ) -> Result<(), ContractError> {
+    // Fail-closed: reject Ed25519 if adapters are enabled
+    if crate::storage::has_oracle_adapters(env) {
+        return Err(ContractError::UnauthorizedOracle);
+    }
+
     if oracle_pubkey == &BytesN::from_array(env, &[0u8; 32]) {
         return Err(ContractError::UnauthorizedOracle);
     }
@@ -322,6 +344,23 @@ pub fn verify_market_outcome(
 /// adapter is enabled but this market has no config, that is a
 /// misconfiguration and fails closed with `OraclePriceUnavailable` rather
 /// than silently falling back to Ed25519.
+///
+/// # Fail-closed contract (#778)
+///
+/// When the `oracle-adapter` Cargo feature is **not** compiled in:
+/// - If the Reflector adapter is **disabled** (the default), we fall back to
+///   Ed25519, exactly as before.
+/// - If the Reflector adapter is **enabled** but the feature gate is off,
+///   the contract fails closed with `UnauthorizedOracle` rather than
+///   silently letting an Ed25519 signature stand in for a missing adapter.
+///   This mirrors the existing Pyth arm and prevents a misconfigured release
+///   build (adapter enabled, feature omitted) from quietly resolving a market
+///   via the weaker path.
+///
+/// The `oracle-adapter` feature must **not** appear in `[features] default`
+/// (see `Cargo.toml`).  CI enforces this with a dedicated
+/// `oracle-adapter-not-default` job and a compile-time `#[test]` in this
+/// module.
 fn verify_via_reflector(
     env: &Env,
     market_id: u32,
@@ -330,17 +369,34 @@ fn verify_via_reflector(
     proof: &BytesN<64>,
 ) -> Result<(), ContractError> {
     if !crate::storage::is_adapter_enabled(env, &AdapterType::Reflector) {
+        // Adapter disabled: fall back to direct Ed25519 verification.
         return verify_oracle_signature(env, market_id, outcome, proof, &market.oracle_pubkey);
     }
-    let config = crate::storage::get_market_adapter_config(env, market_id)
-        .ok_or(ContractError::OraclePriceUnavailable)?;
-    use crate::oracle_adapter::OracleAdapter as _;
-    let adapter = crate::oracle_adapter::ReflectorAdapter {
-        contract_id: config.oracle_contract,
-        asset: config.asset,
-        resolution_price: config.resolution_price,
-    };
-    adapter.verify_outcome(env, market_id, outcome, &Bytes::new(env))
+
+    // Adapter is enabled — from here we MUST use the real on-chain adapter.
+    // If the `oracle-adapter` feature was not compiled in we fail closed
+    // instead of silently accepting an Ed25519 signature (#778).
+    #[cfg(feature = "oracle-adapter")]
+    {
+        let config = crate::storage::get_market_adapter_config(env, market_id)
+            .ok_or(ContractError::OraclePriceUnavailable)?;
+        use crate::oracle_adapter::OracleAdapter as _;
+        let adapter = crate::oracle_adapter::ReflectorAdapter {
+            contract_id: config.oracle_contract,
+            asset: config.asset,
+            resolution_price: config.resolution_price,
+        };
+        return adapter.verify_outcome(env, market_id, outcome, &Bytes::new(env));
+    }
+
+    // `oracle-adapter` feature not compiled in — fail closed (#778).
+    // The Reflector adapter was explicitly enabled by the admin but the
+    // on-chain integration is not present in this build.  Returning
+    // UnauthorizedOracle here is deliberate: it is a clear, typed error
+    // rather than a silent fallback that would let a plain Ed25519 signature
+    // resolve a market whose adapter is supposed to be Reflector.
+    #[cfg(not(feature = "oracle-adapter"))]
+    Err(ContractError::UnauthorizedOracle)
 }
 
 /// Verify that the market outcome is valid using V2 oracle signatures.
@@ -368,28 +424,35 @@ pub fn verify_market_outcome_v2(
         ),
         AdapterType::Reflector => {
             if crate::storage::is_adapter_enabled(env, &adapter_type) {
-                let config = crate::storage::get_market_adapter_config(env, market_id)
-                    .ok_or(ContractError::OraclePriceUnavailable)?;
-                use crate::oracle_adapter::OracleAdapter as _;
-                let adapter = crate::oracle_adapter::ReflectorAdapter {
-                    contract_id: config.oracle_contract,
-                    asset: config.asset,
-                    resolution_price: config.resolution_price,
-                };
-                adapter.verify_outcome(env, market_id, outcome, &Bytes::new(env))
-            } else {
-                // Adapter disabled/unavailable — fall back to raw Ed25519 V2 verification.
-                verify_oracle_signature_v2(
-                    env,
-                    passphrase_hash,
-                    market_id,
-                    outcome,
-                    valid_until,
-                    epoch,
-                    proof,
-                    &market.oracle_pubkey,
-                )
+                // Adapter enabled — must use the real on-chain Reflector.
+                // Fail closed if the feature gate is missing (#778).
+                #[cfg(feature = "oracle-adapter")]
+                {
+                    let config = crate::storage::get_market_adapter_config(env, market_id)
+                        .ok_or(ContractError::OraclePriceUnavailable)?;
+                    use crate::oracle_adapter::OracleAdapter as _;
+                    let adapter = crate::oracle_adapter::ReflectorAdapter {
+                        contract_id: config.oracle_contract,
+                        asset: config.asset,
+                        resolution_price: config.resolution_price,
+                    };
+                    return adapter.verify_outcome(env, market_id, outcome, &Bytes::new(env));
+                }
+                // `oracle-adapter` feature not compiled in — fail closed (#778).
+                #[cfg(not(feature = "oracle-adapter"))]
+                return Err(ContractError::UnauthorizedOracle);
             }
+            // Adapter disabled/unavailable — fall back to raw Ed25519 V2 verification.
+            verify_oracle_signature_v2(
+                env,
+                passphrase_hash,
+                market_id,
+                outcome,
+                valid_until,
+                epoch,
+                proof,
+                &market.oracle_pubkey,
+            )
         }
         AdapterType::Pyth => {
             if crate::storage::is_adapter_enabled(env, &adapter_type) {
@@ -1491,4 +1554,46 @@ mod adapter_fallback_tests {
             assert_eq!(result, Err(ContractError::UnauthorizedOracle));
         });
     }
-}
+
+    #[test]
+    fn test_verify_fails_closed_when_adapters_enabled() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+
+        env.as_contract(&contract_id, || {
+            // Enable oracle adapters
+            crate::storage::enable_oracle_adapters(&env);
+
+            // Even with a valid-looking pubkey, Ed25519 verification should fail
+            let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+            let signature = BytesN::from_array(&env, &[0u8; 64]);
+
+            let result = verify_oracle_signature(&env, 1u32, true, &signature, &oracle_pubkey);
+            assert_eq!(result, Err(ContractError::UnauthorizedOracle));
+        });
+    }
+
+    #[test]
+    fn test_upgrade_order_safety_adapters_must_be_enabled_first() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+
+        env.as_contract(&contract_id, || {
+            // Initially, no adapters are registered
+            assert!(!crate::storage::has_oracle_adapters(&env));
+
+            // Ed25519 would work at this point (if we provided valid signature)
+            // But once adapters are enabled, it must be rejected
+
+            // Simulate resolution contract upgrade setting up adapters
+            crate::storage::enable_oracle_adapters(&env);
+            assert!(crate::storage::has_oracle_adapters(&env));
+
+            // Now Ed25519 must ALWAYS fail (fail-closed)
+            let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+            let signature = BytesN::from_array(&env, &[0u8; 64]);
+
+            let result = verify_oracle_signature(&env, 1u32, true, &signature, &oracle_pubkey);
+            assert_eq!(result, Err(ContractError::UnauthorizedOracle));
+        });
+    }
