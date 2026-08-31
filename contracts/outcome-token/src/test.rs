@@ -83,6 +83,104 @@ fn non_admin_cannot_update_metadata() {
     );
 }
 
+// ── set_metadata require_auth (#729) ─────────────────────────────────────────
+//
+// The tests above run under `mock_all_auths()`, so `admin.require_auth()`
+// inside `set_metadata` always succeeds unconditionally — they don't verify
+// the auth gate itself. The tests below build their own environment without
+// blanket auth mocking so the gate is genuinely exercised.
+
+fn setup_unmocked_metadata(
+    env: &Env,
+) -> (OutcomeTokenContractClient<'_>, Address, Address, Address) {
+    let contract_id = env.register(OutcomeTokenContract, ());
+    let client = OutcomeTokenContractClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let market_contract = Address::generate(env);
+    let name = String::from_str(env, "Vatix YES Token");
+    let symbol = String::from_str(env, "vYES");
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (&admin, &market_contract, &name, &symbol).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(&admin, &market_contract, &name, &symbol);
+
+    (client, admin, market_contract, contract_id)
+}
+
+/// `set_metadata` must succeed when called with a valid authorization from
+/// the registered admin address.
+#[test]
+fn set_metadata_succeeds_when_authorized_by_admin() {
+    let env = Env::default();
+    let (client, admin, _market, contract_id) = setup_unmocked_metadata(&env);
+
+    let new_name = String::from_str(&env, "Vatix NO Token");
+    let new_symbol = String::from_str(&env, "vNO");
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_metadata",
+            args: (&admin, &new_name, &new_symbol).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_metadata(&admin, &new_name, &new_symbol);
+
+    assert_eq!(client.name(), new_name);
+    assert_eq!(client.symbol(), new_symbol);
+}
+
+/// `set_metadata` must panic when called without any authorization — no
+/// address has been mocked, so `admin.require_auth()` cannot be satisfied.
+/// This is the "external EOA cannot update metadata" acceptance criterion.
+#[test]
+#[should_panic]
+fn set_metadata_panics_without_admin_authorization() {
+    let env = Env::default();
+    let (client, admin, _market, _contract_id) = setup_unmocked_metadata(&env);
+
+    let new_name = String::from_str(&env, "Hack");
+    let new_symbol = String::from_str(&env, "HCK");
+
+    // No auths are mocked — `admin.require_auth()` inside `set_metadata`
+    // has nothing to satisfy it with, so this must panic.
+    client.set_metadata(&admin, &new_name, &new_symbol);
+}
+
+/// A non-admin address passing its own auth cannot update metadata — the
+/// contract checks `admin != config.admin` after `require_auth()`.
+#[test]
+fn set_metadata_rejects_non_admin_with_own_auth() {
+    let env = Env::default();
+    let (client, _admin, _market, contract_id) = setup_unmocked_metadata(&env);
+    let stranger = Address::generate(&env);
+    let new_name = String::from_str(&env, "Bad");
+    let new_symbol = String::from_str(&env, "BAD");
+
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_metadata",
+            args: (&stranger, &new_name, &new_symbol).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert_eq!(
+        client.try_set_metadata(&stranger, &new_name, &new_symbol),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
 // ── mint ────────────────────────────────────────────────────────────────────
 
 #[test]
