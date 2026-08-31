@@ -205,6 +205,49 @@ jobs:
       - name: Invoke example (echo guard)
         run: bash scripts/invoke-example.sh
 
+  # #778 — oracle-adapter feature-flag guard.
+  # Verifies that the `oracle-adapter` Cargo feature is NOT compiled into the
+  # default build (i.e. not listed in `[features] default` in
+  # contracts/market/Cargo.toml). A default build must compile cleanly without
+  # the feature, and the runtime test in oracle.rs will catch any accidental
+  # addition to `default` before it reaches mainnet.
+  oracle-adapter-not-default:
+    name: oracle-adapter not in default features (#778)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      # Build WITHOUT --features oracle-adapter to confirm the crate compiles
+      # and that no oracle-adapter types leak into the default code path.
+      - name: Build market crate without oracle-adapter feature
+        run: cargo build -p vatix-market-contract
+
+      # Run the feature-guard test that asserts cfg!(feature="oracle-adapter")
+      # is false when invoked without the flag.
+      - name: Assert oracle-adapter not default (runtime test)
+        run: cargo test -p vatix-market-contract oracle_adapter_is_not_in_default_features
+
+  # #779 — Workspace members guard.
+  # Fails CI if any crate other than the four production contracts
+  # (market, treasury, resolution, outcome-token) appears under contracts/.
+  # This prevents hello-world, scratch, or example crates from accidentally
+  # ending up in the deploy matrix.
+  check-workspace-members:
+    name: Workspace members guard (#779)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check workspace members
+        run: bash scripts/check-workspace-members.sh
+
   build-contracts:
     name: Build all contract crates
     runs-on: ubuntu-latest

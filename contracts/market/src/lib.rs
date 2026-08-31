@@ -104,8 +104,11 @@ mod withdraw_fuzz;
 mod validation;
 
 use crate::error::ContractError;
+#[cfg(feature = "oracle-adapter")]
 use crate::oracle_adapter::Asset;
-use crate::types::{AdapterType, Market, MarketAdapterConfig, MarketStatus, Position};
+#[cfg(feature = "oracle-adapter")]
+use crate::types::MarketAdapterConfig;
+use crate::types::{AdapterType, Market, MarketStatus, Position};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use vatix_outcome_token_contract::{types::TokenKind, OutcomeTokenContractClient};
 use vatix_resolution_contract::types::CandidateStatus as ResolutionCandidateStatus;
@@ -788,11 +791,17 @@ impl MarketContract {
     /// `oracle::verify_market_outcome` uses once the corresponding adapter
     /// type is enabled via `set_adapter_enabled` (#680).
     ///
+    /// Only available when the `oracle-adapter` Cargo feature is compiled in
+    /// (#778). Without the feature the contract's adapter dispatch already
+    /// fails closed with `UnauthorizedOracle` when Reflector is enabled, so
+    /// there is nothing to configure.
+    ///
     /// Only the stored admin may call this.
     ///
     /// # Errors
     /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
     /// - [`ContractError::MarketNotFound`] — `market_id` does not exist.
+    #[cfg(feature = "oracle-adapter")]
     pub fn set_market_adapter_config(
         env: Env,
         admin: Address,
@@ -821,6 +830,8 @@ impl MarketContract {
     }
 
     /// Return the stored Reflector/Pyth adapter config for `market_id`, if any (#681).
+    /// Only available when the `oracle-adapter` Cargo feature is compiled in (#778).
+    #[cfg(feature = "oracle-adapter")]
     pub fn get_market_adapter_config(env: Env, market_id: u32) -> Option<MarketAdapterConfig> {
         storage::get_market_adapter_config(&env, market_id)
     }
