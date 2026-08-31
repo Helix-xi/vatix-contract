@@ -8,6 +8,19 @@
 //! See docs/adr-001-oracle-adapter.md for the design rationale and testnet
 //! comparison.
 //!
+//! **Reviewed for #717**: "Pyth remains a stub" describes `verify_market_outcome`
+//! in `oracle.rs`, which intentionally never dispatches to [`PythAdapter`]
+//! (it fails closed with `UnauthorizedOracle` whenever the Pyth adapter is
+//! enabled — see #680's commit message: full wiring needs the live entrypoint's
+//! `proof: BytesN<64>` ABI to accept a variable-length VAA instead, tracked
+//! separately). [`PythAdapter::verify_outcome`] itself, in isolation, is
+//! *not* a stub: it already does the real submit-then-read VAA sequence
+//! (`update_price_feeds` then `get_price`) and already rejects an empty
+//! `proof` before making any cross-contract call. The test suite's
+//! `MockPyth::get_price` now panics if called before `update_price_feeds`,
+//! so that call-ordering guarantee — not just the final resolved outcome —
+//! is regression-tested.
+//!
 //! # no_std / Soroban note
 //! `dyn OracleAdapter` requires heap allocation and is unavailable in this
 //! `#![no_std]` crate.  Callers should either monomorphise over a concrete
@@ -351,12 +364,32 @@ mod tests {
                 .set(&soroban_sdk::symbol_short!("price"), &price);
         }
 
+        /// Records that `update_price_feeds` ran, so tests can assert the
+        /// VAA-submission step actually happened before `get_price` reads
+        /// the verified price back (#717) — not just that the caller-facing
+        /// outcome happened to be correct.
         pub fn update_price_feeds(env: Env, _data: Bytes) {
             // In tests we pre-set the price via `set_price`; the VAA is ignored.
-            let _ = env;
+            env.storage()
+                .instance()
+                .set(&soroban_sdk::symbol_short!("upd"), &true);
         }
 
+        /// Panics if called before `update_price_feeds` — the real Pyth
+        /// receiver only has a verified price to serve once the VAA has been
+        /// submitted, so `get_price` reached first would mean `PythAdapter`
+        /// skipped the update step (#717).
         pub fn get_price(env: Env, _feed_id: BytesN<32>) -> PythPrice {
+            let updated: bool = env
+                .storage()
+                .instance()
+                .get(&soroban_sdk::symbol_short!("upd"))
+                .unwrap_or(false);
+            assert!(
+                updated,
+                "get_price called before update_price_feeds — Pyth VAA path must \
+                 submit the update before reading the verified price back (#717)"
+            );
             let price: i64 = env
                 .storage()
                 .instance()
