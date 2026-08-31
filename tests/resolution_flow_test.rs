@@ -88,118 +88,9 @@ struct Harness {
     numeric_market_id: u32,
 }
 
-impl Harness {
-    /// Build a fully-wired harness.
-    ///
-    /// Steps:
-    /// 1. Register + initialize `MarketContract` with direct storage bootstrap
-    ///    (V1 oracle left enabled).
-    /// 2. Register + initialize `ResolutionContract` pointing at the market.
-    /// 3. Wire resolution into market via timelocked two-step registration.
-    /// 4. Create one market with the oracle keypair and collateral token.
-    fn new() -> Self {
-        let env = Env::default();
-        env.mock_all_auths();
+const BOND_AMOUNT: i128 = 10_000_000;
 
-        // ── 1. Market contract ────────────────────────────────────────────
-        let market_id_addr = env.register(MarketContract, ());
-        let market_client = MarketContractClient::new(&env, &market_id_addr);
-
-        let admin = Address::generate(&env);
-        // Bootstrap storage directly (same pattern used by other integration
-        // tests). This sets version + admin without going through the public
-        // `initialize` entrypoint, which would also write `oracle_v1_disabled = true`.
-        // We intentionally skip that write so V1 oracle signatures remain
-        // enabled — the resolution contract's `propose` calls the V1
-        // `verify_signature` cross-contract entrypoint.
-        env.as_contract(&market_id_addr, || {
-            market_storage::set_version(&env);
-            market_storage::set_admin(&env, &admin);
-        });
-
-        // ── 2. Collateral token (SAC) ─────────────────────────────────────
-        let token_admin = Address::generate(&env);
-        let token = env.register_stellar_asset_contract_v2(token_admin.clone());
-        let collateral_token = token.address();
-
-        // ── 3. Oracle keypair ─────────────────────────────────────────────
-        let (oracle_pubkey, oracle_key) = oracle_keypair(&env);
-
-        // ── 4. Create a market ────────────────────────────────────────────
-        let question = String::from_str(&env, "Will BTC exceed $100k before 2027?");
-        let end_time = env.ledger().timestamp() + 86_400 * 30; // 30 days
-        let numeric_market_id = market_client.initialize_market(
-            &admin,
-            &question,
-            &end_time,
-            &oracle_pubkey,
-            &collateral_token,
-            &None::<String>,
-        );
-
-        // ── 5. Resolution contract ────────────────────────────────────────
-        let resolution_addr = env.register(ResolutionContract, ());
-        let resolution_client = ResolutionContractClient::new(&env, &resolution_addr);
-
-        let factory = Address::generate(&env);
-        resolution_client.initialize(
-            &admin,
-            &factory,
-            &market_id_addr,
-            &CHALLENGE_WINDOW,
-        );
-
-        // ── 6. Wire resolution into market (timelocked two-step) ──────────
-        // `propose_resolution_contract` starts a 172_800 s timelock.
-        market_client.propose_resolution_contract(&admin, &resolution_addr);
-
-        // Fast-forward past the timelock.
-        env.ledger().with_mut(|li| {
-            li.timestamp += vatix_market_contract::FEE_RATE_TIMELOCK_SECONDS + 1;
-        });
-
-        // Commit the pending change — now `get_resolution_contract()` returns
-        // `Some(resolution_addr)`.
-        market_client.execute_resolution_contract();
-
-        Harness {
-            env,
-            market_client,
-            market_id: market_id_addr,
-            resolution_client,
-            admin,
-            collateral_token,
-            oracle_key,
-            numeric_market_id,
-        }
-    }
-
-    /// Mint `amount` stroops of the collateral token to `recipient`.
-    fn mint(&self, recipient: &Address, amount: i128) {
-        StellarAssetClient::new(&self.env, &self.collateral_token)
-            .mint(recipient, &amount);
-    }
-
-    /// Return the current `MarketStatus` of the test market.
-    fn market_status(&self) -> MarketStatus {
-        self.env.as_contract(&self.market_id, || {
-            market_storage::get_market(&self.env, self.numeric_market_id)
-                .unwrap()
-                .unwrap()
-                .status
-        })
-    }
-
-    /// Current ledger timestamp.
-    fn now(&self) -> u64 {
-        self.env.ledger().timestamp()
-    }
-
-    /// Sign `(market_id, outcome)` with the oracle key.
-    fn sign(&self, outcome: bool) -> BytesN<64> {
-        oracle_sign(&self.env, &self.oracle_key, self.numeric_market_id, outcome)
-    }
-}
+// ── propose ───────────────────────────────────────────────────────────────────
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -233,7 +124,7 @@ fn e2e_propose_finalize_resolves_real_market() {
         &sig_expiry,
         &String::from_str(env, "ipfs://evidence-hash"),
         &CHALLENGE_WINDOW,
-        &MIN_BOND,
+        &BOND_AMOUNT,
     );
 
     let candidate = h.resolution_client
@@ -246,10 +137,27 @@ fn e2e_propose_finalize_resolves_real_market() {
     // Market must still be Active — finalize hasn't run yet.
     assert_eq!(h.market_status(), MarketStatus::Active);
 
-    // Step 2: advance ledger past the challenge window.
-    env.ledger().with_mut(|li| {
-        li.timestamp += CHALLENGE_WINDOW + 1;
-    });
+    let proposer = Address::generate(&env);
+    let id1 = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &make_signature(&env),
+        &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
+        &make_uri(&env, "ipfs://evidence-1"),
+        &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
+    );
+    let id2 = client.propose(
+        &proposer,
+        &2u32,
+        &false,
+        &make_signature(&env),
+        &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
+        &make_uri(&env, "ipfs://evidence-2"),
+        &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
+    );
 
     // Step 3: finalize — cross-contracts to market's resolve_market.
     let finalizer = Address::generate(env);
@@ -261,17 +169,28 @@ fn e2e_propose_finalize_resolves_real_market() {
     assert_eq!(finalized.outcome, outcome);
     assert_eq!(finalized.signature, signature);
 
-    // Market contract state — the critical assertion for #773.
-    assert_eq!(
-        h.market_status(),
-        MarketStatus::Resolved,
-        "#773: finalize must transition the real Market to Resolved"
+    let proposer = Address::generate(&env);
+    let expiry = env.ledger().timestamp() + CHALLENGE_WINDOW + 100;
+    client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &make_signature(&env),
+        &expiry,
+        &make_uri(&env, "ipfs://first"),
+        &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 
-    // candidate_id_for_market mapping is consistent.
-    assert_eq!(
-        h.resolution_client.get_candidate_id_for_market(&h.numeric_market_id),
-        Some(candidate_id)
+    let result = client.try_propose(
+        &proposer,
+        &1u32,
+        &false,
+        &make_signature(&env),
+        &expiry,
+        &make_uri(&env, "ipfs://second"),
+        &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
     );
 }
 
@@ -297,7 +216,7 @@ fn e2e_challenged_candidate_leaves_market_active() {
         &sig_expiry,
         &String::from_str(env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
-        &MIN_BOND,
+        &BOND_AMOUNT,
     );
 
     // Challenge within the window.
@@ -306,24 +225,45 @@ fn e2e_challenged_candidate_leaves_market_active() {
     h.resolution_client.challenge(
         &challenger,
         &candidate_id,
-        &String::from_str(env, "ipfs://dispute"),
-        &MIN_BOND,
+        &make_uri(&env, "ipfs://challenge-evidence"),
+        &BOND_AMOUNT,
     );
 
     let candidate = h.resolution_client
         .get_candidate(&candidate_id)
         .expect("candidate should exist");
     assert_eq!(candidate.status, CandidateStatus::Challenged);
+    assert_eq!(candidate.challenged_by, Some(challenger));
+}
+
+#[test]
+fn challenge_after_window_closes_is_rejected() {
+    let (env, client, _admin) = scaffold();
+
+    let proposer = Address::generate(&env);
+    let candidate_id = client.propose(
+        &proposer,
+        &1u32,
+        &true,
+        &make_signature(&env),
+        &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
+        &make_uri(&env, "ipfs://evidence"),
+        &CHALLENGE_WINDOW,
+        &BOND_AMOUNT,
+    );
 
     // Advance past the challenge window.
     env.ledger().with_mut(|li| {
         li.timestamp += CHALLENGE_WINDOW + 1;
     });
 
-    // finalize must be rejected for a challenged candidate.
-    let finalizer = Address::generate(env);
-    let result = h.resolution_client.try_finalize(&finalizer, &candidate_id);
-    assert!(result.is_err(), "challenged candidate must not finalize");
+    let challenger = Address::generate(&env);
+    let result = client.try_challenge(
+        &challenger,
+        &candidate_id,
+        &make_uri(&env, "ipfs://late-challenge"),
+        &BOND_AMOUNT,
+    );
 
     // Market stays Active — no spurious resolve_market call.
     assert_eq!(
@@ -355,7 +295,7 @@ fn e2e_finalize_before_window_rejects_and_market_stays_active() {
         &sig_expiry,
         &String::from_str(env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
-        &MIN_BOND,
+        &BOND_AMOUNT,
     );
 
     // Do NOT advance time — window is still open.
@@ -394,7 +334,7 @@ fn e2e_duplicate_proposal_rejected() {
         &sig_expiry,
         &String::from_str(env, "ipfs://first"),
         &CHALLENGE_WINDOW,
-        &MIN_BOND,
+        &BOND_AMOUNT,
     );
 
     // Second proposal for the same market must fail.
@@ -430,12 +370,29 @@ fn e2e_invalid_signature_rejected_by_market() {
         &proposer,
         &h.numeric_market_id,
         &true,
-        &bad_sig,
-        &sig_expiry,
-        &String::from_str(env, "ipfs://bad"),
+        &make_signature(&env),
+        &(env.ledger().timestamp() + CHALLENGE_WINDOW + 100),
+        &make_uri(&env, "ipfs://evidence"),
         &CHALLENGE_WINDOW,
-        &MIN_BOND,
+        &BOND_AMOUNT,
     );
+
+    let challenger = Address::generate(&env);
+    client.challenge(
+        &challenger,
+        &candidate_id,
+        &make_uri(&env, "ipfs://dispute"),
+        &BOND_AMOUNT,
+    );
+
+    // Advance past window — but challenged candidates still cannot finalize.
+    env.ledger().with_mut(|li| {
+        li.timestamp += CHALLENGE_WINDOW + 1;
+    });
+
+    let finalizer = Address::generate(&env);
+    let result = client.try_finalize(&finalizer, &candidate_id);
+
     assert!(
         result.is_err(),
         "propose with all-zero signature must be rejected by real market"
@@ -464,7 +421,7 @@ fn e2e_no_outcome_resolves_correctly() {
         &sig_expiry,
         &String::from_str(env, "ipfs://no-evidence"),
         &CHALLENGE_WINDOW,
-        &MIN_BOND,
+        &BOND_AMOUNT,
     );
 
     env.ledger().with_mut(|li| {

@@ -169,7 +169,15 @@ gating for high-stakes markets.
 - Should `oracle_pubkey` be kept as an optional fallback for markets that
   pre-date the adapter, or deprecated entirely?
 - How should `resolution_price` be expressed for non-USD quote currencies?
-- Who is responsible for calling `update_price_feeds` if Pyth is later added?
+- ~~Who is responsible for calling `update_price_feeds` if Pyth is later
+  added?~~ **Answered (#717)**: `PythAdapter::verify_outcome` itself calls
+  `update_price_feeds` with the caller-supplied VAA before reading the price
+  back via `get_price` — no separate off-chain keeper step is needed. What
+  remains open is *not* the VAA submission (implemented and regression-tested
+  in `oracle_adapter.rs`), but wiring `PythAdapter` into the live
+  `verify_market_outcome` dispatch, which currently fails closed for Pyth
+  because `resolve_market`'s `proof: BytesN<64>` ABI has no room for a
+  variable-length VAA — see `oracle_adapter.rs`'s module doc.
 
 ---
 
