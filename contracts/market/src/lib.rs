@@ -1607,6 +1607,28 @@ impl MarketContract {
         Ok(pending.new_rate_bps)
     }
 
+    /// Cancel a pending fee rate change before it takes effect.
+    ///
+    /// Only the stored admin may call this. Clears the pending change set by
+    /// [`Self::set_fee_rate`] so it can no longer be applied via
+    /// [`Self::execute_fee_rate_change`].
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::NoPendingFeeChange`] — no change is pending.
+    pub fn cancel_fee_rate_change(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::get_pending_fee_rate_change(&env).ok_or(ContractError::NoPendingFeeChange)?;
+        storage::clear_pending_fee_rate_change(&env);
+        Ok(())
+    }
+
     /// Set the hard upper bound on the withdrawal fee rate, in basis points
     /// (0–10_000). Enforced both when a new rate is proposed
     /// ([`Self::set_fee_rate`]) and when a pending change is applied
