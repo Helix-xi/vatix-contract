@@ -88,6 +88,33 @@ events additionally carry a `version: u32 (topic)` field
 | `emergency_mode_changed` | `new_mode: EmergencyMode (topic)`, `admin: Address`, `changed_at: u64` | Admin changes the mirrored emergency mode (`set_emergency_mode`), coordinated with the Market and Treasury contracts (#662, wired up for resolution by #701) |
 | `market_voided` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `voided_at: u64` | Resolution `void_market` runs: the proposer's bond is split/slashed, challengers are refunded, and the market contract's `void_market` is invoked to move the market to `Canceled` (Issue #708). The market contract emits its own `market_voided` for the status transition. |
 
+### Resolution ABI notes for off-chain indexers
+
+- **#752 — Address getters**: `get_factory()`, `get_market_contract()`, and
+  `get_admin()` are read-only view functions added as dedicated address getters
+  (Issue #752). They complement `get_config()` for backends that need a single
+  field without deserializing the full `ResolutionConfig` struct. No events are
+  emitted by these calls.
+
+- **#754 — `finalize` caller model**: `finalize(finalizer, candidate_id)` is an
+  **open-caller / keeper** entrypoint. Any address may trigger finalization once
+  the challenge window closes. The `finalizer` address is authenticated via
+  `require_auth()` but is not checked against admin or factory — keepers,
+  off-chain bots, the proposer, or any other party may call it. The
+  `candidate_finalized` event does not include a `finalizer` field; if you need
+  to track who triggered finalization, index the authorizing signer from the
+  Soroban transaction envelope.
+
+- **#755 — `market_id` type bridge**: The resolution contract stores
+  `market_id` as `u32` internally (auto-increment counter). When calling
+  `resolve_market` on the market contract, the value is converted to its
+  base-10 decimal `String` representation (e.g., `42u32` → `"42"`) via the
+  internal `market_id_to_string` helper. The `candidate_proposed` and
+  `candidate_finalized` events carry `market_id: u32` (the resolution
+  contract's native representation), while the market contract's
+  `market_resolved` event carries `market_id: u32` (the market contract's own
+  storage key, decoded from the string). Both are numerically equal.
+
 ## Outcome Token (`contracts/outcome-token/src/events.rs`)
 
 | Event/Topic | Fields (name: type) | Emitted When |
@@ -95,6 +122,8 @@ events additionally carry a `version: u32 (topic)` field
 | `token_minted` | `market_id: u32 (topic)`, `user: Address (topic)`, `kind: TokenKind`, `amount: i128`, `new_balance: i128` | Outcome tokens (YES/NO) are minted to a user |
 | `token_burned` | `market_id: u32 (topic)`, `user: Address (topic)`, `kind: TokenKind`, `amount: i128`, `new_balance: i128` | Outcome tokens are burned from a user |
 | `token_transferred` | `market_id: u32 (topic)`, `from: Address (topic)`, `to: Address`, `kind: TokenKind`, `amount: i128` | Outcome tokens are transferred between two users |
+| `contract_paused` | `admin: Address (topic)`, `paused_at: u64` | Contract administratively paused; `mint`, `burn`, `transfer` now return `ContractPaused` (#750) |
+| `contract_unpaused` | `admin: Address (topic)`, `unpaused_at: u64` | Contract unpaused; normal token operations restored (#750) |
 
 ## Notes for indexers
 

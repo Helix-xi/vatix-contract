@@ -81,5 +81,29 @@
 ### `collect_fee` (`treasury/src/lib.rs`) — No violation
 `collect_fee` never makes an external token call itself; the actual token movement happens on the caller's side (a market contract's fee-routing code, already covered by the `withdraw_unused_collateral` entry above) before it invokes `collect_fee` to record the accounting entry. There is nothing to reorder within this function.
 
-### `cancel_market` / `reopen_market` (`market/src/lib.rs`) — No external calls, no violation
-Both functions are pure status-transition paths: admin authorization is verified, the market record is loaded and its status validated (via `validate_cancelable` / `validate_reopenable`), the market is written back to storage with the new status, and a single event is published. Neither function performs a token transfer, cross-contract invocation, or any other external call. The Checks-Effects-Interactions order is correct by construction: the only "effect" is `storage::set_market`, and the only "interaction" is `emit_market_canceled` / `emit_market_reopened` (event publication, not a value-moving call). Explicitly recorded here because both functions alter `MarketStatus` and are therefore in scope for reentrancy review alongside `void_market`.
+---
+
+## Issues #752–#755 — Resolution audit additions (no new CEI concerns)
+
+The following changes introduced by Issues #752–#755 carry no new reentrancy or
+CEI implications:
+
+- **#752 — `get_factory` / `get_market_contract` / `get_admin` getters**: Pure
+  storage reads; no external calls, no state writes, no CEI ordering concern.
+
+- **#753 — Bond constant visibility (`MIN_BOND_AMOUNT`, `MIN_CHALLENGE_BOND_AMOUNT`)**: The
+  constants were changed from `const` to `pub const`. No CEI impact. The bond
+  transfer in `propose` / `challenge` was already ordered after all state writes
+  (see §6 and §7 above); making the floor constants visible for testing does not
+  alter the ordering.
+
+- **#754 — `finalize` open-caller documentation**: No code change to `finalize`
+  itself. The existing implementation already uses the keeper model and is
+  already CEI-compliant (see table row above: "Already CEI-compliant — status
+  persisted and bond settlement computed before every external transfer").
+
+- **#755 — `market_id_to_string` ABI bridge documentation**: No code change.
+  The `market_id_to_string` helper is a pure string-formatting function with no
+  external calls or state writes. The cross-contract call to `resolve_market`
+  that consumes its output already runs after all state writes in `finalize`
+  and `arbitrate_uphold_proposer` (see CEI table above).
