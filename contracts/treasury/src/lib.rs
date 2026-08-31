@@ -75,6 +75,12 @@ impl TreasuryContract {
         admin: Address,
         market_contract: Address,
     ) -> Result<(), TreasuryError> {
+        // Reject contract addresses as admin before anything else.
+        // A contract admin can be called without a real key owner's consent
+        // and would allow privilege escalation.
+        if admin.executable().is_some() {
+            return Err(TreasuryError::InvalidAdmin);
+        }
         admin.require_auth();
         if storage::has_admin(&env) {
             return Err(TreasuryError::AlreadyInitialized);

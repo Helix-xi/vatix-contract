@@ -40,7 +40,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | `propose_threshold_signers` / `execute_threshold_signers` / `cancel_threshold_signers` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked global threshold-signer/quorum rotation (#665). |
 | `set_market_threshold_signers`  | ✅ | ✅ | Immediate (not timelocked) per-market signer/quorum override — scoped to a single `Active` market rather than the global admin key set, which is why it isn't timelocked like the global family above. |
 | `set_threshold_signers`         | ✅ | ✅ | Legacy immediate global signer/quorum setter, retained only for test backward-compatibility; prefer the `propose_threshold_signers` timelock family for production changes. |
-| `set_fee_rate` (propose) / `execute_fee_rate_change` | propose ✅, execute — | propose ✅, execute n/a | Timelocked; fee cap is re-checked at *both* proposal and execution time so a cap lowered mid-flight can't let a stale rate through. |
+| `set_fee_rate` (propose) / `execute_fee_rate_change` / `cancel_fee_rate_change` | propose ✅, execute —, cancel ✅ | propose ✅, cancel ✅, execute n/a | Timelocked; fee cap is re-checked at *both* proposal and execution time so a cap lowered mid-flight can't let a stale rate through. `cancel_fee_rate_change` (Issue #748) clears a pending change before it takes effect; returns `NoPendingFeeChange` if nothing is pending. |
 | `set_fee_cap`                   | ✅ | ✅ | Hard upper bound on `set_fee_rate`. |
 | `add_fee_waiver` / `remove_fee_waiver` | ✅ | ✅ | Admin cannot waive itself (#584). |
 | `reconcile_position_tokens`     | ✅ | ✅ | Admin-gated repair of a `Position` / `OutcomeToken` divergence (see `reconciliation.rs`); mints/burns `OutcomeToken` balances to match `Position`, never the reverse. |
@@ -143,12 +143,13 @@ Not previously covered by this table at all — added by this pass.
 | `initialize`           | ✅ (`admin`) | n/a (bootstraps admin) | Guarded by `AlreadyInitialized`. |
 | `set_market_contract`  | ✅ (`admin`) | ✅ (`config.admin`) | Updates the sole address allowed to `mint`/`burn`. |
 | `set_metadata`         | ✅ (`admin`) | ✅ (`config.admin`) | Updates SAC-compatible `name`/`symbol`. |
-| `mint`                 | ✅ (`config.market_contract`) | n/a — role check *is* the auth check | Only the registered market contract may mint; not admin-gated by design. |
-| `burn`                 | ✅ (`config.market_contract`) | n/a — role check *is* the auth check | Same as `mint`. |
-| `transfer`             | ✅ (`from`) | n/a | Peer-to-peer transfer. Rejected unconditionally: `MarketNotResolved` before the market resolves, `TransferBlockedAfterResolve` once it has (Issue #690 — see `transfer`'s doc comment for why post-resolution transfer is unsafe given `Position`-keyed settlement). |
+| `pause` / `unpause`    | ✅ (`admin`) | ✅ (`config.admin`) | Issue #750. Administratively freezes all token mutations (`mint`, `burn`, `transfer`) until `unpause` is called. `ContractPaused` error returned on any attempt while frozen. Defaults to `false` (unpaused) on fresh deployment. Emits `ContractPaused` / `ContractUnpaused` events. |
+| `mint`                 | ✅ (`config.market_contract`) | n/a — role check *is* the auth check | Only the registered market contract may mint; not admin-gated by design. Blocked with `ContractPaused` while paused (#750). |
+| `burn`                 | ✅ (`config.market_contract`) | n/a — role check *is* the auth check | Same as `mint`. Blocked with `ContractPaused` while paused (#750). |
+| `transfer`             | ✅ (`from`) | n/a | Peer-to-peer transfer. Rejected with `ContractPaused` while paused (#750); also rejected with `MarketNotResolved` before the market resolves, `TransferBlockedAfterResolve` once it has (Issue #690 — see `transfer`'s doc comment for why post-resolution transfer is unsafe given `Position`-keyed settlement). |
 
-`get_config`, `name`, `symbol`, `decimals`, `balance`, and `total_supply` are
-read-only getters and out of scope for this table.
+`get_config`, `is_paused`, `name`, `symbol`, `decimals`, `balance`, and
+`total_supply` are read-only getters and out of scope for this table.
 
 ## Conclusion
 
@@ -166,3 +167,20 @@ closed by adding `admin.require_auth()` to all four functions, consistent
 with every other admin mutator in the file (`set_default_challenge_window`,
 `set_treasury`, `slash_collateral`, `arbitrate_uphold_proposer`,
 `void_market`, all of which already had it).
+
+**Second pass (Issues #748, #749, #750, #751):**
+- **Market `cancel_fee_rate_change`** (#748): completes the fee-rate timelock
+  family (`set_fee_rate` / `execute_fee_rate_change` / `cancel_fee_rate_change`).
+  Admin can now cancel a pending fee-rate change before it takes effect.
+- **Outcome-token `pause`/`unpause`** (#750): added incident-response freeze
+  capability to `outcome-token`, blocking all token mutations (`mint`, `burn`,
+  `transfer`) while paused. `is_paused` getter and `ContractPaused` /
+  `ContractUnpaused` events also added. Defaults to `false` (unpaused) on
+  fresh deployment, so existing deployments are unaffected.
+- **Resolution `assert_version`** (#751): `execute_treasury`, `cancel_treasury`,
+  `set_emergency_mode`, and `propose` (propose entrypoint) now call
+  `storage::assert_version()` to fail-closed against stale on-chain storage
+  layout after a partial upgrade, matching every other mutator in the contract.
+- **`cancel_treasury` `require_auth`** (#748): `cancel_treasury` was checking
+  admin equality via `require_admin` but not calling `admin.require_auth()`.
+  Fixed to match every other cancel entrypoint in the file.
