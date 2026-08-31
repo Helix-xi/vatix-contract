@@ -410,6 +410,7 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_emergency_mode_allows(&env, &[EmergencyMode::Normal])?;
         validate_uri(&evidence_uri)?;
@@ -559,11 +560,6 @@ impl ResolutionContract {
             &challenge_uri,
             bond_amount,
         );
-
-        // Interactions: lock the challenger's bond only after state is
-        // committed (CEI, Issue #695).
-        let this = env.current_contract_address();
-        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
 
         Ok(())
     }
@@ -872,6 +868,7 @@ impl ResolutionContract {
     /// elapsed (Issue #687). Callable by anyone — the timelock itself is the
     /// access control.
     pub fn execute_treasury(env: Env) -> Result<Address, ContractError> {
+        storage::assert_version(&env)?;
         let pending = storage::get_pending_treasury(&env).ok_or(ContractError::Unauthorized)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::Unauthorized);
@@ -884,6 +881,7 @@ impl ResolutionContract {
 
     /// Cancel a pending treasury address change before it takes effect.
     pub fn cancel_treasury(env: Env, admin: Address) -> Result<(), ContractError> {
+        storage::assert_version(&env)?;
         admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
@@ -910,6 +908,7 @@ impl ResolutionContract {
         new_mode: EmergencyMode,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::set_emergency_mode(&env, &new_mode);
