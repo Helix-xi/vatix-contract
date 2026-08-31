@@ -2896,6 +2896,53 @@ mod test {
         );
     }
 
+    // ========== Issue #718: set_adapter_enabled admin-only + event ==========
+
+    /// `set_adapter_enabled` is already admin-gated (see
+    /// `test_non_admin_cannot_call_admin_mutators` above) and paused-gated
+    /// (see the `assert_paused!` coverage), but until now no test exercised
+    /// the actual happy path: an admin call must flip `is_adapter_enabled`
+    /// and must emit `OracleAdapterConfigured` so off-chain indexers observe
+    /// the mainnet-switch flip.
+    #[test]
+    fn test_set_adapter_enabled_toggles_state_and_emits_event() {
+        use crate::types::AdapterType;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        assert!(
+            !client.is_adapter_enabled(&AdapterType::Reflector),
+            "adapters must default to disabled"
+        );
+
+        env.events().all(); // clear setup events
+
+        client.set_adapter_enabled(&admin, &AdapterType::Reflector, &true);
+        assert!(client.is_adapter_enabled(&AdapterType::Reflector));
+        let events_after_enable = env.events().all();
+        assert!(
+            events_after_enable.len() > 0,
+            "OracleAdapterConfigured event should be emitted when an adapter is enabled"
+        );
+
+        client.set_adapter_enabled(&admin, &AdapterType::Reflector, &false);
+        assert!(!client.is_adapter_enabled(&AdapterType::Reflector));
+        let events_after_disable = env.events().all();
+        assert!(
+            events_after_disable.len() > 0,
+            "OracleAdapterConfigured event should be emitted when an adapter is disabled"
+        );
+
+        // Pyth is tracked independently of Reflector.
+        assert!(!client.is_adapter_enabled(&AdapterType::Pyth));
+        client.set_adapter_enabled(&admin, &AdapterType::Pyth, &true);
+        assert!(client.is_adapter_enabled(&AdapterType::Pyth));
+        assert!(
+            !client.is_adapter_enabled(&AdapterType::Reflector),
+            "toggling Pyth must not affect Reflector's independently-tracked flag"
+        );
+    }
+
     #[test]
     fn test_set_resolution_contract_records_address() {
         let (env, admin, client, _contract_id) = create_test_contract();
