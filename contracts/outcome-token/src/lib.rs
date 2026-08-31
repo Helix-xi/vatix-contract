@@ -83,7 +83,7 @@ impl OutcomeTokenContract {
     ) -> Result<(), ContractError> {
         admin.require_auth();
         storage::assert_version(&env)?;
-        let mut config = storage::get_config(&env);
+        let config = storage::get_config(&env);
         if admin != config.admin {
             return Err(ContractError::Unauthorized);
         }
@@ -309,8 +309,8 @@ impl OutcomeTokenContract {
         env: Env,
         market_id: u32,
         from: Address,
-        to: Address,
-        kind: TokenKind,
+        _to: Address,
+        _kind: TokenKind,
         amount: i128,
     ) -> Result<(), ContractError> {
         if amount <= 0 {

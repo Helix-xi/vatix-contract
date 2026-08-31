@@ -100,6 +100,7 @@ pub fn emit_market_contract_set(env: &Env, market_contract: &Address) {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct TokenTransferred {
     #[topic]
     pub market_id: u32,
@@ -110,6 +111,7 @@ pub struct TokenTransferred {
     pub amount: i128,
 }
 
+#[allow(dead_code)]
 pub fn emit_token_transferred(
     env: &Env,
     market_id: u32,

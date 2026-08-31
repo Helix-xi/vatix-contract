@@ -1,5 +1,5 @@
 use crate::error::ContractError;
-use crate::types::{OutcomeTokenConfig, TokenKind};
+use crate::types::{OutcomeTokenConfig, PendingAddressChange, TokenKind};
 use soroban_sdk::{contracttype, Address, Env};
 
 /// Bump this constant whenever the outcome-token storage layout changes in a
