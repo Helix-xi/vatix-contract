@@ -39,12 +39,9 @@ pub enum StorageKey {
     PendingFactory,
     /// Pending market contract address awaiting its timelock delay.
     PendingMarketContract,
-    /// Emergency pause flag. When `true`, all state-mutating operations are
-    /// rejected until the admin calls `unpause`. Defaults to `false` via
-    /// `unwrap_or` so a contract without an explicit write is not paused.
-    Paused,
-    /// Mirrored coordinated emergency mode (Issue #662).
-    /// Defaults to `Normal` when unset.
+    /// Pending treasury address awaiting its timelock delay (Issue #687).
+    PendingTreasury,
+    /// Mirrored emergency mode (Issue #662).
     EmergencyMode,
 }
 
@@ -201,22 +198,16 @@ pub fn set_treasury(env: &Env, treasury: &Address) {
     env.storage().persistent().set(&StorageKey::Treasury, treasury);
 }
 
-/// Check whether the resolution contract is in a paused state.
-///
-/// Returns `false` when the `Paused` key has never been written — a fresh
-/// deployment is never accidentally paused without an explicit admin call.
-pub fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::Paused)
-        .unwrap_or(false)
+pub fn get_pending_treasury(env: &Env) -> Option<crate::types::PendingAddressChange> {
+    env.storage().persistent().get(&StorageKey::PendingTreasury)
 }
 
-/// Pause or unpause the resolution contract (emergency halt).
-pub fn set_paused(env: &Env, paused: bool) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Paused, &paused);
+pub fn set_pending_treasury(env: &Env, pending: &crate::types::PendingAddressChange) {
+    env.storage().persistent().set(&StorageKey::PendingTreasury, pending);
+}
+
+pub fn clear_pending_treasury(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingTreasury);
 }
 
 pub fn get_emergency_mode(env: &Env) -> crate::types::EmergencyMode {
@@ -227,9 +218,7 @@ pub fn get_emergency_mode(env: &Env) -> crate::types::EmergencyMode {
 }
 
 pub fn set_emergency_mode(env: &Env, mode: &crate::types::EmergencyMode) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::EmergencyMode, mode);
+    env.storage().persistent().set(&StorageKey::EmergencyMode, mode);
 }
 
 #[cfg(test)]

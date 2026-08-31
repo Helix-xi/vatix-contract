@@ -384,6 +384,15 @@ impl ResolutionContract {
 
         storage::set_candidate(&env, &candidate);
         events::emit_candidate_proposed(&env, &candidate);
+
+        // Lock the proposer's bond in this contract's collateral-token
+        // balance after all state writes (CEI, Issue #695).
+        TokenClient::new(&env, &collateral_token).transfer(
+            &proposer,
+            env.current_contract_address(),
+            &bond_amount,
+        );
+
         Ok(candidate.id)
     }
 
@@ -412,7 +421,7 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
-        require_not_paused(&env)?;
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_emergency_mode_allows(&env, &[EmergencyMode::Normal])?;
         validate_uri(&evidence_uri)?;
@@ -444,8 +453,6 @@ impl ResolutionContract {
         verification?;
 
         let collateral_token = get_collateral_token(&env, &config, market_id);
-        let token_client = TokenClient::new(&env, &collateral_token);
-        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
 
         let proposed_at = env.ledger().timestamp();
         if valid_until < proposed_at {
@@ -479,6 +486,13 @@ impl ResolutionContract {
         // no candidate record existed yet for this market.
         storage::set_candidate(&env, &candidate);
         events::emit_candidate_proposed(&env, &candidate);
+
+        // Lock the proposer's bond in this contract's collateral-token
+        // balance. Uses the same token as the market's collateral so a
+        // single `finalize` refund path can rely on it. Ordered after every
+        // state write above (Checks-Effects-Interactions, Issue #695).
+        let token_client = TokenClient::new(&env, &collateral_token);
+        token_client.transfer(&candidate.proposer, env.current_contract_address(), &bond_amount);
 
         Ok(candidate.id)
     }
@@ -558,11 +572,6 @@ impl ResolutionContract {
             &challenge_uri,
             bond_amount,
         );
-
-        // Interactions: lock the challenger's bond only after state is
-        // committed.
-        let this = env.current_contract_address();
-        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
 
         Ok(())
     }
@@ -732,20 +741,40 @@ impl ResolutionContract {
         events::emit_candidate_finalized(&env, &candidate);
 
         // Cross-contract callback: resolve the market with the finalized outcome.
-        // The Finalized status is already persisted above, so a second call to
-        // finalize(candidate_id) will be rejected before reaching this point.
-        //
-        // Args must match `Market::resolve_market`'s real ABI (#683):
-        // (resolver: Address, market_id: String, outcome: bool, signature:
-        // BytesN<64>, expires_at: u64) — the old call used a mock ABI (bare
-        // u32 market_id, no resolver/expires_at) that silently mismatched
-        // the deployed market contract's actual entrypoint. `resolver` is
-        // this contract's own address (it self-authorizes as the direct
-        // invoker, matching how `arbitrate_uphold_proposer` settles
-        // disputes), and `expires_at` reuses the candidate's already-checked
-        // `signature_expiry` so `resolve_market`'s own expiry gate stays
-        // consistent with the check `finalize` already performed above.
-        invoke_resolve_market(&env, &config, &candidate);
+        // For a V1 candidate (`passphrase_hash.is_none()`) call `resolve_market`;
+        // for a V2 candidate call `resolve_market_v2` with the stored
+        // passphrase_hash, valid_until, epoch, and signature (#701).
+        if let Some(passphrase_hash) = candidate.passphrase_hash.clone() {
+            let args: Vec<Val> = soroban_sdk::vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                market_id_to_string(&env, candidate.market_id).into_val(&env),
+                candidate.outcome.into_val(&env),
+                candidate.signature_expiry.into_val(&env),
+                candidate.epoch.into_val(&env),
+                candidate.signature.clone().into_val(&env),
+                passphrase_hash.into_val(&env),
+            ];
+            let _: () = env.invoke_contract(
+                &config.market_contract,
+                &Symbol::new(&env, "resolve_market_v2"),
+                args,
+            );
+        } else {
+            let args: Vec<Val> = soroban_sdk::vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                market_id_to_string(&env, candidate.market_id).into_val(&env),
+                candidate.outcome.into_val(&env),
+                candidate.signature.clone().into_val(&env),
+                candidate.signature_expiry.into_val(&env),
+            ];
+            let _: () = env.invoke_contract(
+                &config.market_contract,
+                &Symbol::new(&env, "resolve_market"),
+                args,
+            );
+        }
 
         Ok(candidate)
     }
@@ -784,7 +813,7 @@ impl ResolutionContract {
         storage::set_proposer_collateral(&env, &proposer, prev + amount);
         TokenClient::new(&env, &collateral_token).transfer(
             &proposer,
-            &env.current_contract_address(),
+            env.current_contract_address(),
             &amount,
         );
         Ok(())
@@ -806,9 +835,14 @@ impl ResolutionContract {
         if amount <= 0 {
             return Err(ContractError::InsufficientCollateral);
         }
+        // Effects before Interactions (CEI, Issue #695): zero the balance
+        // before transferring so a reentrant call back into slash_collateral
+        // would see amount == 0 and return InsufficientCollateral.
         storage::set_proposer_collateral(&env, &proposer, 0);
+        events::emit_collateral_slashed(&env, &proposer, &recipient, amount);
+        let this = env.current_contract_address();
         TokenClient::new(&env, &collateral_token).transfer(
-            &env.current_contract_address(),
+            &this,
             &recipient,
             &amount,
         );
@@ -848,6 +882,7 @@ impl ResolutionContract {
     /// elapsed (Issue #687). Callable by anyone — the timelock itself is the
     /// access control.
     pub fn execute_treasury(env: Env) -> Result<Address, ContractError> {
+        storage::assert_version(&env)?;
         let pending = storage::get_pending_treasury(&env).ok_or(ContractError::Unauthorized)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::Unauthorized);
@@ -860,6 +895,8 @@ impl ResolutionContract {
 
     /// Cancel a pending treasury address change before it takes effect.
     pub fn cancel_treasury(env: Env, admin: Address) -> Result<(), ContractError> {
+        storage::assert_version(&env)?;
+        admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::clear_pending_treasury(&env);
@@ -885,6 +922,7 @@ impl ResolutionContract {
         new_mode: EmergencyMode,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::set_emergency_mode(&env, &new_mode);
@@ -974,7 +1012,19 @@ impl ResolutionContract {
         events::emit_candidate_arbitrated(&env, candidate_id, candidate.market_id, candidate.outcome);
 
         // Same ABI fix as `finalize` (#683) — see the comment there.
-        invoke_resolve_market(&env, &config, &candidate);
+        let args: Vec<Val> = soroban_sdk::vec![
+            &env,
+            env.current_contract_address().into_val(&env),
+            market_id_to_string(&env, candidate.market_id).into_val(&env),
+            candidate.outcome.into_val(&env),
+            candidate.signature.clone().into_val(&env),
+            candidate.signature_expiry.into_val(&env),
+        ];
+        let _: () = env.invoke_contract(
+            &config.market_contract,
+            &Symbol::new(&env, "resolve_market"),
+            args,
+        );
 
         Ok(candidate)
     }
