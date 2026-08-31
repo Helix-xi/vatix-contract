@@ -803,6 +803,26 @@ pub fn get_all_market_ids(env: &Env) -> Vec<u32> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
+// --- Oracle Adapter Support ---
+// CRITICAL: When oracle adapters are enabled (non-empty), Ed25519 fallback MUST be disabled.
+// This enforces a fail-closed security model. See ADR-002 in docs/.
+
+/// Check if any oracle adapters are registered.
+/// If true, Ed25519 signature verification should not be used as fallback.
+pub fn has_oracle_adapters(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .has(&StorageKey::OracleAdapters)
+}
+
+/// Register that oracle adapters are enabled for this market contract.
+/// This disables Ed25519 fallback (fail-closed).
+pub fn enable_oracle_adapters(env: &Env) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OracleAdapters, &true);
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
