@@ -99,6 +99,7 @@ pub struct BondSlashed {
     pub slashed_at: u64,
 }
 
+// Issue #765: emit_bond_slashed requires 8 explicit parameters for event payload initialization
 #[allow(clippy::too_many_arguments)]
 pub fn emit_bond_slashed(
     env: &Env,

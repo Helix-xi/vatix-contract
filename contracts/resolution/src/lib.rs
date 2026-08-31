@@ -1,3 +1,4 @@
+// Issue #765: Required no_std attribute for Soroban WASM contract execution
 #![no_std]
 #![warn(clippy::all)]
 
@@ -386,6 +387,7 @@ impl ResolutionContract {
     /// (and admin arbitration) will call `resolve_market_v2` for any
     /// candidate proposed here, mirroring exactly the verification this
     /// function already performed.
+    // Issue #765: propose_v2 requires 10 explicit parameters for Soroban contract specification
     #[allow(clippy::too_many_arguments)]
     pub fn propose_v2(
         env: Env,
@@ -1172,6 +1174,7 @@ fn require_arbitrable(env: &Env, candidate: &ResolutionCandidate) -> Result<(), 
 /// `REWARD_BPS` to `winner`, `BURN_BPS` burned, and the remainder to the
 /// configured treasury (or left in this contract's balance if none is
 /// registered). Emits `BondSlashed` for observability.
+// Issue #765: split_bond helper requires 7 explicit parameters for bond distribution calculation
 #[allow(clippy::too_many_arguments)]
 fn split_bond(
     env: &Env,

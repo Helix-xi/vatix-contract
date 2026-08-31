@@ -1,3 +1,4 @@
+// Issue #765: Required no_std attribute for Soroban WASM contract execution
 #![no_std]
 #![warn(clippy::all)]
 

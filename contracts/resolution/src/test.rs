@@ -85,6 +85,7 @@ mod mock_market {
 
         /// V2 counterpart of `verify_signature`. Same all-zero-signature
         /// rejection convention as V1.
+        // Issue #765: verify_signature_v2 test mock requires 7 parameters per V2 specification
         #[allow(clippy::too_many_arguments)]
         pub fn verify_signature_v2(
             env: Env,
@@ -126,6 +127,7 @@ mod mock_market {
         }
 
         /// Real signature: `(resolver, market_id: String, outcome, valid_until, epoch, signature, passphrase_hash)`.
+        // Issue #765: resolve_market_v2 test mock requires 8 parameters per V2 specification
         #[allow(clippy::too_many_arguments)]
         pub fn resolve_market_v2(
             env: Env,
